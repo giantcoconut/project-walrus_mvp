@@ -31,7 +31,7 @@ const provenanceTripleA: TripleDraft = {
   object: claimTriple,
 };
 
-const provenanceTripleB: TripleDraft = {
+const provenanceTripleB: TripleDraft  = {
   subject: rawUrlB,
   predicate: 'asserts',
   object: claimTriple,

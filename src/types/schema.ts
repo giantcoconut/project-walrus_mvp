@@ -32,16 +32,15 @@ export interface ParsedNewsPayload {
   arena: TripleDraft[];
 }
 
-export type DraftStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type DraftStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'MINTED';
 
 export interface ClaimDraftRow {
   id: string;
-  headline: string;
   source: string;
   url: string;
+  headline: string;
   payload_json: ParsedNewsPayload;
   status: DraftStatus;
-  tx_hash: string | null;
   created_at: string;
-  approved_by: string | null;
+  tx_hash: string | null;
 }
