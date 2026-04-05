@@ -18,6 +18,8 @@ export const MVP_PREDICATES = [
 
 export type Predicate = (typeof MVP_PREDICATES)[number];
 
+export type ApprovedSource = 'The Block' | 'CNBC World News';
+
 export interface TripleDraft {
   subject: BaseAtom;
   predicate: Predicate;
@@ -36,7 +38,7 @@ export type DraftStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'MINTED';
 
 export interface ClaimDraftRow {
   id: string;
-  source: string;
+  source: ApprovedSource;
   url: string;
   headline: string;
   payload_json: ParsedNewsPayload;

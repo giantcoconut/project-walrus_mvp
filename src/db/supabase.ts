@@ -2,7 +2,6 @@ import 'dotenv/config';
 
 import {
   createClient,
-  type PostgrestSingleResponse,
   type SupabaseClient,
 } from '@supabase/supabase-js';
 
@@ -21,8 +20,49 @@ if (!supabaseServiceKey) {
 
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServiceKey);
 
+export interface SaveDraftResult {
+  data: ClaimDraftRow | null;
+  skippedDuplicate: boolean;
+}
+
 export async function saveDraft(
   draft: Omit<ClaimDraftRow, 'id' | 'created_at'>,
-): Promise<PostgrestSingleResponse<ClaimDraftRow>> {
-  return supabase.from('claim_drafts').insert(draft).select().single();
+): Promise<SaveDraftResult> {
+  try {
+    const result = await supabase.from('claim_drafts').insert(draft).select().single();
+
+    if (result.error) {
+      if (result.error.code === '23505') {
+        console.log(`[DATABASE] Duplicate draft skipped for URL: ${draft.url}`);
+
+        return {
+          data: null,
+          skippedDuplicate: true,
+        };
+      }
+
+      throw result.error;
+    }
+
+    return {
+      data: result.data,
+      skippedDuplicate: false,
+    };
+  } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === '23505'
+    ) {
+      console.log(`[DATABASE] Duplicate draft skipped for URL: ${draft.url}`);
+
+      return {
+        data: null,
+        skippedDuplicate: true,
+      };
+    }
+
+    throw error;
+  }
 }

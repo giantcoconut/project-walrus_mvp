@@ -79,6 +79,8 @@ This file tracks completed work as the project moves forward.
 - Added `scripts/test-db.ts` to verify draft insertion into Supabase
 - Extended `DraftStatus` to include `MINTED`
 - Verified `scripts/test-db.ts` inserts a live `PENDING` draft into Supabase successfully
+- Added silent duplicate handling for `claim_drafts` unique URL collisions
+- Added strict `ApprovedSource` typing and enforced exact source names through the RSS poller
 
 #### Notes
 

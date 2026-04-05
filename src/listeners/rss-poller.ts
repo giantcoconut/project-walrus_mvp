@@ -5,20 +5,20 @@ import { canonicalizeSource, canonicalizeUrl } from '../core/canonicalizer';
 import { getAtomId } from '../core/id-engine';
 import { saveDraft } from '../db/supabase';
 import { parseHeadline } from '../services/ai-parser';
-import type { ParsedNewsPayload } from '../types/schema';
+import type { ApprovedSource, ParsedNewsPayload } from '../types/schema';
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
 const FEEDS = [
   {
-    name: 'The Block',
+    source: 'The Block',
     url: 'https://www.theblock.co/rss.xml',
   },
   {
-    name: 'CNBC World News',
+    source: 'CNBC World News',
     url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100000000&id=10000366',
   },
-] as const;
+] as const satisfies ReadonlyArray<{ source: ApprovedSource; url: string }>;
 
 const parser = new Parser({
   timeout: 15_000,
@@ -57,7 +57,7 @@ async function processFeed(
   onPayload?: (payload: ParsedNewsPayload) => Promise<void> | void,
 ): Promise<void> {
   const feed = await parser.parseURL(feedConfig.url);
-  const source = canonicalizeSource(feedConfig.name);
+  const source = canonicalizeSource(feedConfig.source);
 
   for (const item of feed.items) {
     const headline = getItemTitle(item);
@@ -77,7 +77,7 @@ async function processFeed(
     try {
       const payload = await parseHeadline(headline, canonicalUrl, source);
       const saveResult = await saveDraft({
-        source: feedConfig.name,
+        source: feedConfig.source,
         url: canonicalUrl,
         headline,
         payload_json: payload,
@@ -85,21 +85,20 @@ async function processFeed(
         tx_hash: null,
       });
 
-      if (saveResult.error) {
-        throw saveResult.error;
-      }
-
       seenUrlHashes.add(urlHash);
-      console.log(`[DATABASE] Saved PENDING draft for: ${headline}`);
+
+      if (!saveResult.skippedDuplicate) {
+        console.log(`[DATABASE] Saved PENDING draft for: ${headline}`);
+      }
 
       if (onPayload) {
         await onPayload(payload);
       } else {
-        console.log(`[rss-poller] Parsed ${feedConfig.name}: ${headline}`);
+        console.log(`[rss-poller] Parsed ${feedConfig.source}: ${headline}`);
         console.log(JSON.stringify(payload, null, 2));
       }
     } catch (error) {
-      console.error(`[rss-poller] Failed to parse headline from ${feedConfig.name}:`, error);
+      console.error(`[rss-poller] Failed to parse headline from ${feedConfig.source}:`, error);
     }
   }
 }
@@ -112,7 +111,7 @@ export async function pollFeedsOnce(
     try {
       await processFeed(feedConfig, seenUrlHashes, onPayload);
     } catch (error) {
-      console.error(`[rss-poller] Failed to poll ${feedConfig.name}:`, error);
+      console.error(`[rss-poller] Failed to poll ${feedConfig.source}:`, error);
     }
   }
 }
