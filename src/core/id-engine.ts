@@ -1,4 +1,4 @@
-import { concatHex, keccak256, toHex } from 'viem';
+import { concatHex, keccak256, toHex, type Hex } from 'viem';
 
 import { canonicalizeLabel, canonicalizeSource, canonicalizeUrl } from './canonicalizer';
 import type { BaseAtom, Bytes32, TripleDraft } from '../types/schema';
@@ -70,6 +70,14 @@ export function getTripleId(
   predicateId: Bytes32,
   objectId: Bytes32,
 ): Bytes32 {
+  return getTripleIdFromIds(subjectId, predicateId, objectId) as Bytes32;
+}
+
+export function getTripleIdFromIds(
+  subjectId: Hex,
+  predicateId: Hex,
+  objectId: Hex,
+): Hex {
   return keccak256(concatHex([subjectId, predicateId, objectId])) as Bytes32;
 }
 

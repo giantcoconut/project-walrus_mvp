@@ -36,4 +36,6 @@ desktop.ini
 .vscode/
 .idea/
 
-progress.md
+*.md
+!README.md
+

@@ -2,10 +2,11 @@ import type { ParsedNewsPayload } from '../src/types/schema';
 import { saveDraft } from '../src/db/supabase';
 
 async function main(): Promise<void> {
+  const runId = Date.now();
   const dummyPayload: ParsedNewsPayload = {
     headline: 'Acme launches tokenized weather derivatives platform',
     source: 'The Block',
-    url: 'theblock.co/post/acme-launches-tokenized-weather-derivatives-platform',
+    url: `theblock.co/post/acme-launches-tokenized-weather-derivatives-platform-${runId}`,
     archive: [
       {
         subject: 'Acme',
@@ -19,6 +20,14 @@ async function main(): Promise<void> {
       },
     ],
     arena: [],
+    entityMetadata: {
+      Acme: {
+        name: 'Acme',
+        description:
+          'Acme is a fictional company used as a placeholder entity in integration and systems tests.',
+        url: 'https://example.com/acme',
+      },
+    },
   };
 
   const result = await saveDraft({
@@ -30,11 +39,7 @@ async function main(): Promise<void> {
     tx_hash: null,
   });
 
-  if (result.error) {
-    throw result.error;
-  }
-
-  if (!result.data) {
+  if (result.skippedDuplicate || !result.data) {
     throw new Error('Supabase insert returned no row data.');
   }
 

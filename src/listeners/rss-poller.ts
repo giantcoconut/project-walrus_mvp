@@ -9,23 +9,27 @@ import type { ApprovedSource, ParsedNewsPayload } from '../types/schema';
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
-const FEEDS = [
+export const FEEDS = [
   {
     source: 'The Block',
     url: 'https://www.theblock.co/rss.xml',
   },
   {
-    source: 'CNBC World News',
-    url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100000000&id=10000366',
+    source: 'BBC World News',
+    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
   },
 ] as const satisfies ReadonlyArray<{ source: ApprovedSource; url: string }>;
 
-const parser = new Parser({
-  timeout: 15_000,
-  headers: {
-    'User-Agent': 'Aletheia Terminal RSS Poller/0.1',
-  },
-});
+export function createRssParser(): Parser {
+  return new Parser({
+    timeout: 15_000,
+    headers: {
+      'User-Agent': 'Aletheia Terminal RSS Poller/0.1',
+    },
+  });
+}
+
+const parser = createRssParser();
 
 export interface RssPollerOptions {
   intervalMs?: number;
@@ -43,11 +47,11 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function getItemLink(item: { link?: string }): string | null {
+export function getItemLink(item: { link?: string }): string | null {
   return typeof item.link === 'string' && item.link.trim() ? item.link : null;
 }
 
-function getItemTitle(item: { title?: string }): string | null {
+export function getItemTitle(item: { title?: string }): string | null {
   return typeof item.title === 'string' && item.title.trim() ? item.title.trim() : null;
 }
 

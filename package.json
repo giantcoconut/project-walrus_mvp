@@ -5,7 +5,9 @@
   "scripts": {
     "test:dna": "tsx scripts/test-dna.ts",
     "test:brain": "tsx scripts/test-brain.ts",
+    "test:ingestion": "tsx scripts/test-ingestion.ts",
     "test:db": "tsx scripts/test-db.ts",
+    "admin:cli": "tsx scripts/admin-cli.ts",
     "poll:rss": "tsx src/listeners/rss-poller.ts"
   },
   "keywords": [],
@@ -15,9 +17,9 @@
   "dependencies": {
     "@0xintuition/protocol": "^2.0.2",
     "@0xintuition/sdk": "^2.0.2",
-    "@google/genai": "^1.48.0",
     "@supabase/supabase-js": "^2.101.1",
     "dotenv": "^17.4.0",
+    "openai": "^6.34.0",
     "rss-parser": "^3.13.0",
     "viem": "^2.47.10"
   },
