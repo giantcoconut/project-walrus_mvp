@@ -145,6 +145,29 @@ export async function getDraftById(draftId: string): Promise<ClaimDraftRow | nul
   return (result.data as ClaimDraftRow | null) ?? null;
 }
 
+export async function getDraftsByIds(draftIds: string[]): Promise<ClaimDraftRow[]> {
+  if (draftIds.length === 0) {
+    return [];
+  }
+
+  const uniqueIds = Array.from(new Set(draftIds));
+  const result = await supabase
+    .from('claim_drafts')
+    .select('*')
+    .in('id', uniqueIds);
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  const drafts = (result.data as ClaimDraftRow[] | null) ?? [];
+  const ordered = new Map(drafts.map((draft) => [draft.id, draft]));
+
+  return uniqueIds
+    .map((draftId) => ordered.get(draftId))
+    .filter((draft): draft is ClaimDraftRow => Boolean(draft));
+}
+
 export async function fetchPendingDrafts(limit = 25): Promise<ClaimDraftRow[]> {
   const result = await supabase
     .from('claim_drafts')

@@ -9,6 +9,7 @@ import {
   supabase,
 } from '../db/supabase';
 import {
+  FEED_HEADLINE_LOOKBACK,
   FEEDS,
   createRssParser,
   getItemLink,
@@ -16,8 +17,6 @@ import {
 } from '../listeners/rss-poller';
 import { parseHeadline } from './ai-parser';
 import type { ApprovedSource, ParsedNewsPayload } from '../types/schema';
-
-const ITEMS_PER_FEED = 3;
 
 interface CandidateHeadline {
   source: ApprovedSource;
@@ -81,7 +80,7 @@ async function fetchFeedHeadlines(feed: (typeof FEEDS)[number]): Promise<FeedFet
           } satisfies CandidateHeadline;
         })
         .filter((item): item is CandidateHeadline => item !== null)
-        .slice(0, ITEMS_PER_FEED);
+        .slice(0, FEED_HEADLINE_LOOKBACK);
 
       return {
         source: feed.source,
@@ -129,12 +128,17 @@ async function getExistingUrls(urls: string[]): Promise<Set<string>> {
 function dedupeCandidates(candidates: CandidateHeadline[], existingUrls: Set<string>) {
   const localSeen = new Set<string>();
   const fresh: CandidateHeadline[] = [];
+  const skippedItems: Array<CandidateHeadline & { reason: 'local' | 'db' }> = [];
   let skippedLocal = 0;
   let skippedDb = 0;
 
   for (const candidate of candidates) {
     if (localSeen.has(candidate.canonicalUrl)) {
       skippedLocal += 1;
+      skippedItems.push({
+        ...candidate,
+        reason: 'local',
+      });
       continue;
     }
 
@@ -142,6 +146,10 @@ function dedupeCandidates(candidates: CandidateHeadline[], existingUrls: Set<str
 
     if (existingUrls.has(candidate.canonicalUrl)) {
       skippedDb += 1;
+      skippedItems.push({
+        ...candidate,
+        reason: 'db',
+      });
       continue;
     }
 
@@ -150,6 +158,7 @@ function dedupeCandidates(candidates: CandidateHeadline[], existingUrls: Set<str
 
   return {
     fresh,
+    skippedItems,
     skipped: skippedLocal + skippedDb,
     skippedReasons: {
       local: skippedLocal,
@@ -202,6 +211,10 @@ export async function runManualFetchIngestion(
         source: result.source,
         itemCount: result.items.length,
         error: result.error,
+        items: result.items.map((item) => ({
+          headline: item.headline,
+          canonicalUrl: item.canonicalUrl,
+        })),
       })),
       fetchedCount: fetched.length,
     }, feedErrors.length > 0 ? 'One or more feeds failed during fetch.' : undefined);
@@ -216,8 +229,14 @@ export async function runManualFetchIngestion(
       duplicateBreakdown: deduped.skippedReasons,
       freshItems: deduped.fresh.map((item) => ({
         source: item.source,
-        headline: truncateHeadline(item.headline),
+        headline: item.headline,
         canonicalUrl: item.canonicalUrl,
+      })),
+      skippedItems: deduped.skippedItems.map((item) => ({
+        source: item.source,
+        headline: item.headline,
+        canonicalUrl: item.canonicalUrl,
+        reason: item.reason,
       })),
     });
 

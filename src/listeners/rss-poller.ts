@@ -7,6 +7,7 @@ import { parseHeadline } from '../services/ai-parser';
 import type { ApprovedSource, ParsedNewsPayload } from '../types/schema';
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
+export const FEED_HEADLINE_LOOKBACK = 10;
 
 export const FEEDS = [
   {

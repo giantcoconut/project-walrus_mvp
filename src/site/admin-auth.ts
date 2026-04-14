@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import { cookies } from 'next/headers';

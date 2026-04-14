@@ -1,6 +1,7 @@
 import { canonicalizeUrl } from '../src/core/canonicalizer';
 import { saveDraft, supabase } from '../src/db/supabase';
 import {
+  FEED_HEADLINE_LOOKBACK,
   FEEDS,
   createRssParser,
   getItemLink,
@@ -8,8 +9,6 @@ import {
 } from '../src/listeners/rss-poller';
 import { parseHeadline } from '../src/services/ai-parser';
 import type { ApprovedSource, ParsedNewsPayload } from '../src/types/schema';
-
-const ITEMS_PER_FEED = 3;
 
 interface CandidateHeadline {
   source: ApprovedSource;
@@ -63,7 +62,7 @@ async function fetchFeedHeadlines(feed: (typeof FEEDS)[number]): Promise<FeedFet
           } satisfies CandidateHeadline;
         })
         .filter((item): item is CandidateHeadline => item !== null)
-        .slice(0, ITEMS_PER_FEED);
+        .slice(0, FEED_HEADLINE_LOOKBACK);
 
       return {
         source: feed.source,

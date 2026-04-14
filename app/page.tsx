@@ -14,23 +14,24 @@ export default async function HomePage() {
     <div className="mx-auto w-full max-w-[92rem] px-5 pb-24 pt-8 sm:px-8 sm:pt-12">
       <div className="grid gap-12 lg:grid-cols-[minmax(0,1.3fr)_21rem] lg:items-start">
         <Reveal className="space-y-8" delay={0.03}>
-          <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Published terminal</p>
+          <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Structured news graph</p>
           <div className="space-y-6">
             <h1 className="max-w-5xl font-serif text-[3.7rem] leading-[0.9] tracking-[-0.055em] text-ink sm:text-[5.8rem]">
-              A clear public ledger of what publishers asserted and what made it on-chain.
+              News claims, made legible.
             </h1>
             <p className="max-w-2xl text-base leading-8 text-muted sm:text-lg">
-              The public terminal shows only minted records. Each claim carries provenance, a canonical source
-              link, and a transaction reference without exposing draft noise or operational internals.
+              Aletheia turns live headlines into structured claims with provenance, source context, and
+              on-chain continuity. Read the record now. In later phases, this same surface becomes the entry
+              point for wallet actions around the claims themselves.
             </p>
           </div>
           <div className="editorial-rule max-w-5xl" />
           <div className="flex flex-wrap items-center gap-4 text-sm text-muted">
-            <span>Minted records only</span>
+            <span>Claim structure preserved</span>
             <span className="text-line">/</span>
-            <span>Source provenance preserved</span>
+            <span>Source provenance attached</span>
             <span className="text-line">/</span>
-            <span>Archive and Arena structure intact</span>
+            <span>Archive and Arena views</span>
           </div>
         </Reveal>
 
@@ -40,14 +41,14 @@ export default async function HomePage() {
         >
           <div className="space-y-5">
             <div className="space-y-1">
-              <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Current scope</p>
+              <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Signal surface</p>
               <p className="text-sm leading-7 text-muted">
-                The terminal is public-facing and read-only. Review queues, retries, pipeline traces, and
-                execution controls remain private.
+                Every claim shown here has already passed through ingestion, structuring, review, and minting.
+                The noisy machinery stays behind the glass; the record stays in view.
               </p>
             </div>
             <div className="space-y-3 border-t border-line/70 pt-5">
-              <p className="text-sm text-muted">Published records</p>
+              <p className="text-sm text-muted">Minted claims live</p>
               <p className="font-serif text-[2.6rem] leading-none tracking-[-0.05em] text-ink">
                 {claims.length}
               </p>
@@ -88,10 +89,10 @@ export default async function HomePage() {
           </div>
         ) : (
           <div className="border border-line/80 bg-white/60 p-8 shadow-sheet">
-            <p className="font-serif text-[2rem] tracking-[-0.03em] text-ink">No minted claims yet.</p>
+            <p className="font-serif text-[2rem] tracking-[-0.03em] text-ink">The record is still forming.</p>
             <p className="mt-2 max-w-xl text-sm leading-7 text-muted">
-              Once approved records are minted, they will appear here automatically with provenance and
-              transaction references.
+              As new claims clear review and hit the chain, they will appear here with provenance, structure,
+              and transaction references.
             </p>
           </div>
         )}

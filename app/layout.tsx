@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { Newsreader, Public_Sans } from 'next/font/google';
 import type { ReactNode } from 'react';
 
-import { SiteHeader } from '../components/public/site-header';
+import { RootChrome } from '../components/shared/root-chrome';
 import './globals.css';
 
 const editorial = Newsreader({
@@ -27,7 +27,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body className={`${editorial.variable} ${publicSans.variable} grain font-sans`}>
         <div className="min-h-screen">
-          <SiteHeader />
+          <RootChrome />
           <main>{children}</main>
         </div>
       </body>

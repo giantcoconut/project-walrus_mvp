@@ -221,6 +221,84 @@ This file tracks completed work as the project moves forward.
   - `tsconfig.json`
 - Verified `npm run build` completes successfully with the new public pages
 
+#### Phase 5 Admin Ops Console
+
+- Added protected admin access using an `ADMIN_PASSWORD`-backed httpOnly session cookie flow
+- Added admin shell and routes:
+  - `/admin`
+  - `/admin/controls`
+  - `/admin/inbox`
+  - `/admin/runs`
+  - `/admin/runs/[id]`
+  - `/admin/drafts/[id]`
+  - `/admin/minted`
+  - `/admin/errors`
+- Added server actions for:
+  - admin login/logout
+  - manual fetch-latest ingestion
+  - approve draft
+  - reject draft
+  - return errored draft to queue
+- Implemented manual ingestion tracing in `src/services/manual-fetch.ts`:
+  - creates `claim_runs` headers
+  - writes `claim_run_steps` for RSS fetch, canonicalize/dedupe, parse, and DB staging
+  - redirects the operator to the resulting run detail page
+- Added admin data helpers for:
+  - recent draft lists
+  - drafts-by-status queries
+  - draft counts
+  - live term inspection and entity-resolution inspection on the draft detail page
+- Added a trace timeline UI for run-step inspection with structured `detail_json`
+- Updated the root app chrome so public navigation is hidden on admin routes
+- Verified `npm run build` completes successfully with both the public terminal and admin console
+
+#### Phase 5 Admin Refinement
+
+- Upgraded manual ingestion run logging so new `MANUAL_FETCH` traces now include:
+  - fetched headline items per feed
+  - fresh items selected for parsing
+  - skipped items with duplicate reason (`db` or `local`)
+- Upgraded `/admin/runs/[id]` to show:
+  - fetched headline list
+  - fresh headline list
+  - skipped headline list
+  - drafts created by that run
+  - run summary counts for fetched, new, skipped, and created drafts
+- Extended `src/db/supabase.ts` with `getDraftsByIds(...)` so run detail pages can resolve created draft links
+- Extended `src/site/admin-data.ts` to compute a deterministic graph preview for each draft:
+  - primary claim
+  - secondary claims
+  - tertiary provenance bundle
+  - atoms found on graph
+  - atoms missing and likely to be created
+- Reworked `/admin/drafts/[id]` so the draft inspector now shows:
+  - semantic claim stack before raw JSON
+  - atom found/create split
+  - rich entity resolution state
+  - triple IDs and term IDs for the proposed graph bundle
+- Verified targeted import checks for the refined admin modules:
+  - `src/site/admin-data.ts`
+  - `src/services/manual-fetch.ts`
+  - `app/admin/runs/[id]/page.tsx`
+  - `app/admin/drafts/[id]/page.tsx`
+- Expanded feed inspection depth from `3` to `10` headlines per source for:
+  - admin manual fetch runs
+  - `scripts/test-ingestion.ts`
+- Centralized the shared feed lookback setting in `src/listeners/rss-poller.ts`
+- Tightened draft graph preview typing so the repo passes `tsc --noEmit` cleanly after the ingestion update
+- Upgraded `/admin/controls` fetch UX so the manual run button now:
+  - disables on submit
+  - shows a spinner immediately
+  - rotates through descriptive pipeline-stage messages while the server action is running
+- Added explicit runtime context on the controls page explaining that fetch latency is driven by live feed fetches, dedupe checks, parser calls, and database writes
+- Reworked `/admin/runs/[id]` so created drafts now surface inline:
+  - primary claim preview
+  - atom found/create counts
+  - suggested new atoms
+  - direct semantic links into each draft inspector
+- Added batch draft inspection in `src/site/admin-data.ts` so run pages can render semantic previews for multiple drafts efficiently
+- Added a fallback fetched-headline derivation path on the run page using fresh + skipped items when older traces do not expose fetched items cleanly
+
 #### Notes
 
 - This log is intended to be updated incrementally after each successful task.
