@@ -165,6 +165,61 @@ This file tracks completed work as the project moves forward.
 - Replaced CNBC World News with BBC World News in the shared RSS feed configuration and strict approved source typing
 - Added `suggested-upgrades.md` to track future improvements across ingestion, parser quality, entity resolution, executor reliability, database ops, and UI review workflow
 - Added parser repair warnings so malformed model output is shown explicitly when the parser has to salvage a result
+- Added `DESIGN.md` with the agreed Phase 5 design context for the public terminal and admin console
+
+### 2026-04-14
+
+#### Phase 5 Run Trace Foundation
+
+- Implemented the selected two-table observability model in TypeScript:
+  - `claim_runs` as the run header shape
+  - `claim_run_steps` as the ordered step log shape
+- Added run-trace types to `src/types/schema.ts` for:
+  - run status
+  - trigger source
+  - allowed pipeline step names
+  - `ClaimRunRow`
+  - `ClaimRunStepRow`
+- Added Supabase helpers in `src/db/supabase.ts` for:
+  - creating run headers
+  - updating and finishing runs
+  - appending run steps
+  - listing runs for `/admin/runs`
+  - loading a run trace for `/admin/runs/[id]`
+- Logged and resolved the remaining run-model edge case:
+  - `draft_id` is treated as nullable for global `MANUAL_FETCH` traces
+  - draft-linked runs continue to attach directly to a single `claim_drafts` row
+
+#### Phase 5 Public Terminal
+
+- Scaffolded the Next.js 14 App Router frontend foundation for the public site:
+  - `app/`
+  - `components/public/`
+  - Tailwind and PostCSS config
+  - Next runtime files and scripts
+- Added public minted-only data helpers for:
+  - listing `MINTED` claims
+  - loading a single minted claim by ID
+- Implemented public routes:
+  - `/`
+  - `/claims`
+  - `/claims/[id]`
+- Built the public UI in an editorial terminal style with:
+  - warm paper palette
+  - serif-led typography
+  - restrained motion using Framer Motion
+  - provenance-first claim presentation
+- Added public claim filtering by:
+  - source
+  - display type (`Archive` or `Arena`)
+- Added canonical transaction link generation using the configured or inferred Intuition explorer base URL
+- Fixed repo-level compile blockers exposed by the new frontend build:
+  - `src/core/key-manager.ts`
+  - `src/listeners/rss-poller.ts`
+  - `src/services/ai-parser.ts`
+  - `src/services/chain-executor.ts`
+  - `tsconfig.json`
+- Verified `npm run build` completes successfully with the new public pages
 
 #### Notes
 

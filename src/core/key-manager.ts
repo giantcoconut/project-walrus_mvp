@@ -14,7 +14,13 @@ export class NvidiaKeyManager {
   }
 
   getActiveKey(): string {
-    return this.keys[this.activeIndex];
+    const key = this.keys[this.activeIndex];
+
+    if (!key) {
+      throw new Error(`Missing Nvidia API key at index ${this.activeIndex}.`);
+    }
+
+    return key;
   }
 
   rotateKey(): string {

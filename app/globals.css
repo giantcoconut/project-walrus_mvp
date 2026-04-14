@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(176, 101, 58, 0.09), transparent 26%),
+    radial-gradient(circle at right 22%, rgba(76, 104, 58, 0.08), transparent 24%),
+    oklch(0.982 0.006 85);
+}
+
+body {
+  min-height: 100vh;
+  background:
+    linear-gradient(to bottom, rgba(255, 252, 245, 0.88), rgba(249, 245, 236, 0.92)),
+    transparent;
+  color: oklch(0.23 0.02 40);
+  font-feature-settings: 'rlig' 1, 'calt' 1, 'ss01' 1;
+}
+
+a {
+  text-decoration: none;
+}
+
+::selection {
+  background: rgba(177, 97, 48, 0.18);
+  color: oklch(0.2 0.02 40);
+}
+
+.grain {
+  position: relative;
+}
+
+.grain::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.08;
+  background-image:
+    linear-gradient(rgba(56, 44, 28, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 44, 28, 0.035) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.36), transparent 92%);
+}
+
+.editorial-rule {
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(92, 67, 44, 0.32) 18%,
+    rgba(92, 67, 44, 0.5) 50%,
+    rgba(92, 67, 44, 0.32) 82%,
+    transparent
+  );
+  height: 1px;
+  width: 100%;
+}

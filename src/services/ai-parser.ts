@@ -158,10 +158,17 @@ function normalizePredicate(value: unknown, warnings: string[], contextLabel: st
     }
 
     if (normalized in PREDICATE_SYNONYMS) {
+      const repairedPredicate =
+        PREDICATE_SYNONYMS[normalized as keyof typeof PREDICATE_SYNONYMS];
+
+      if (!repairedPredicate) {
+        return 'asserts';
+      }
+
       warnings.push(
-        `[PARSER] Repaired predicate in ${contextLabel}: "${value}" -> "${PREDICATE_SYNONYMS[normalized]}"`,
+        `[PARSER] Repaired predicate in ${contextLabel}: "${value}" -> "${repairedPredicate}"`,
       );
-      return PREDICATE_SYNONYMS[normalized];
+      return repairedPredicate;
     }
   }
 

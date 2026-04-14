@@ -16,7 +16,6 @@ import {
   type WriteConfig,
 } from '@0xintuition/protocol';
 import {
-  bigIntToHex,
   createPublicClient,
   createWalletClient,
   http,
@@ -171,7 +170,7 @@ function normalizeHttpsUrl(value: string | null): string {
 
 function normalizeTermId(termId: unknown): Hex {
   if (typeof termId === 'bigint') {
-    return bigIntToHex(termId, { size: 32 });
+    return toHex(termId, { size: 32 });
   }
 
   if (typeof termId === 'string' && isHex(termId)) {
@@ -325,8 +324,14 @@ async function resolveOrMintRichEntities(
   }
 
   for (let index = 0; index < entitiesToMint.length; index += 1) {
+    const entity = entitiesToMint[index];
+
+    if (!entity) {
+      throw new Error(`Missing rich entity entry at index ${index}.`);
+    }
+
     const createdId = normalizeTermId(events[index]?.args?.termId);
-    entityIds.set(entitiesToMint[index].label, createdId);
+    entityIds.set(entity.label, createdId);
   }
 }
 
@@ -354,8 +359,14 @@ async function mintMissingStringAtoms(
   }
 
   for (let index = 0; index < missingStrings.length; index += 1) {
+    const missingString = missingStrings[index];
+
+    if (!missingString) {
+      throw new Error(`Missing string atom entry at index ${index}.`);
+    }
+
     const createdId = normalizeTermId(events[index]?.args?.termId);
-    entityIds.set(missingStrings[index], createdId);
+    entityIds.set(missingString, createdId);
   }
 }
 

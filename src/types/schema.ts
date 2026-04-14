@@ -51,6 +51,23 @@ export type DraftStatus =
   | 'MINTED'
   | 'ERROR';
 
+export type ClaimRunStatus = 'RUNNING' | 'SUCCESS' | 'ERROR';
+
+export type ClaimRunTrigger = 'MANUAL_FETCH' | 'APPROVE_MINT' | 'RETRY' | 'SYSTEM';
+
+export type ClaimRunStep =
+  | 'RSS_FETCH'
+  | 'PARSE'
+  | 'CANONICALIZE'
+  | 'EXTRACT_TERMS'
+  | 'RESOLVE_ENTITIES'
+  | 'ATOM_COST'
+  | 'CREATE_ATOMS'
+  | 'TRIPLE_COST'
+  | 'CREATE_TRIPLES'
+  | 'RECEIPT_PARSE'
+  | 'DB_UPDATE';
+
 export interface ClaimDraftRow {
   id: string;
   source: ApprovedSource;
@@ -62,4 +79,25 @@ export interface ClaimDraftRow {
   approved_at: string | null;
   tx_hash: string | null;
   last_error: string | null;
+}
+
+export interface ClaimRunRow {
+  id: string;
+  draft_id: string | null;
+  created_at: string;
+  status: ClaimRunStatus;
+  started_at: string;
+  finished_at: string | null;
+  trigger: ClaimRunTrigger | null;
+  initiated_by: string | null;
+}
+
+export interface ClaimRunStepRow {
+  id: string;
+  run_id: string;
+  created_at: string;
+  step: ClaimRunStep;
+  status: ClaimRunStatus;
+  detail_json: Record<string, unknown> | null;
+  error_message: string | null;
 }

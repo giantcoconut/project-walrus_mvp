@@ -1,5 +1,4 @@
 import Parser from 'rss-parser';
-import { pathToFileURL } from 'node:url';
 
 import { canonicalizeSource, canonicalizeUrl } from '../core/canonicalizer';
 import { getAtomId } from '../core/id-engine';
@@ -160,8 +159,12 @@ async function main(): Promise<void> {
 }
 
 const entrypoint = process.argv[1];
+const isDirectExecution =
+  typeof entrypoint === 'string' &&
+  (entrypoint.endsWith('src\\listeners\\rss-poller.ts') ||
+    entrypoint.endsWith('src/listeners/rss-poller.ts'));
 
-if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
+if (isDirectExecution) {
   void main().catch((error) => {
     console.error('[rss-poller] Fatal error:', error);
     process.exitCode = 1;
