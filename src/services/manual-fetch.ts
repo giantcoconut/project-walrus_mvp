@@ -30,6 +30,11 @@ interface FeedFetchResult {
   error: string | null;
 }
 
+interface ProcessFreshCandidateResult {
+  draftId: string | null;
+  errorCount: number;
+}
+
 export interface ManualFetchSummary {
   runId: string;
   fetchedCount: number;
@@ -57,6 +62,8 @@ function sleep(ms: number): Promise<void> {
     setTimeout(resolve, ms);
   });
 }
+
+const MANUAL_FETCH_PARSE_CONCURRENCY = 4;
 
 async function fetchFeedHeadlines(feed: (typeof FEEDS)[number]): Promise<FeedFetchResult> {
   const parser = createRssParser();
@@ -183,6 +190,84 @@ async function logStep(
   });
 }
 
+async function processFreshCandidate(
+  runId: string,
+  candidate: CandidateHeadline,
+): Promise<ProcessFreshCandidateResult> {
+  let payload: ParsedNewsPayload;
+
+  try {
+    payload = await parseHeadline(candidate.headline, candidate.canonicalUrl, candidate.source);
+
+    await logStep(runId, 'PARSE', 'SUCCESS', {
+      source: candidate.source,
+      headline: candidate.headline,
+      canonicalUrl: candidate.canonicalUrl,
+      archiveCount: payload.archive.length,
+      arenaCount: payload.arena.length,
+      entityCount: Object.keys(payload.entityMetadata).length,
+    });
+  } catch (error) {
+    await logStep(
+      runId,
+      'PARSE',
+      'ERROR',
+      {
+        source: candidate.source,
+        headline: candidate.headline,
+        canonicalUrl: candidate.canonicalUrl,
+      },
+      getErrorMessage(error),
+    );
+
+    return {
+      draftId: null,
+      errorCount: 1,
+    };
+  }
+
+  try {
+    const saveResult = await saveDraft({
+      source: candidate.source,
+      url: candidate.canonicalUrl,
+      headline: candidate.headline,
+      payload_json: payload,
+      status: 'PENDING',
+      tx_hash: null,
+    });
+
+    await logStep(runId, 'DB_UPDATE', 'SUCCESS', {
+      source: candidate.source,
+      headline: candidate.headline,
+      canonicalUrl: candidate.canonicalUrl,
+      skippedDuplicate: saveResult.skippedDuplicate,
+      draftId: saveResult.data?.id ?? null,
+    });
+
+    return {
+      draftId: saveResult.data?.id ?? null,
+      errorCount: 0,
+    };
+  } catch (error) {
+    await logStep(
+      runId,
+      'DB_UPDATE',
+      'ERROR',
+      {
+        source: candidate.source,
+        headline: candidate.headline,
+        canonicalUrl: candidate.canonicalUrl,
+      },
+      getErrorMessage(error),
+    );
+
+    return {
+      draftId: null,
+      errorCount: 1,
+    };
+  }
+}
+
 export async function runManualFetchIngestion(
   initiatedBy = 'admin-ui',
 ): Promise<ManualFetchSummary> {
@@ -240,71 +325,29 @@ export async function runManualFetchIngestion(
       })),
     });
 
-    for (const candidate of deduped.fresh) {
-      let payload: ParsedNewsPayload;
+    const processQueue = [...deduped.fresh];
+    const workerCount = Math.min(MANUAL_FETCH_PARSE_CONCURRENCY, processQueue.length);
 
-      try {
-        payload = await parseHeadline(candidate.headline, candidate.canonicalUrl, candidate.source);
+    const workerTasks = Array.from({ length: workerCount }, async () => {
+      while (processQueue.length > 0) {
+        const candidate = processQueue.shift();
 
-        await logStep(run.id, 'PARSE', 'SUCCESS', {
-          source: candidate.source,
-          headline: candidate.headline,
-          canonicalUrl: candidate.canonicalUrl,
-          archiveCount: payload.archive.length,
-          arenaCount: payload.arena.length,
-          entityCount: Object.keys(payload.entityMetadata).length,
-        });
-      } catch (error) {
-        errorCount += 1;
-        await logStep(
-          run.id,
-          'PARSE',
-          'ERROR',
-          {
-            source: candidate.source,
-            headline: candidate.headline,
-            canonicalUrl: candidate.canonicalUrl,
-          },
-          getErrorMessage(error),
-        );
-        continue;
-      }
-
-      try {
-        const saveResult = await saveDraft({
-          source: candidate.source,
-          url: candidate.canonicalUrl,
-          headline: candidate.headline,
-          payload_json: payload,
-          status: 'PENDING',
-          tx_hash: null,
-        });
-
-        if (saveResult.data) {
-          savedDraftIds.push(saveResult.data.id);
+        if (!candidate) {
+          return;
         }
 
-        await logStep(run.id, 'DB_UPDATE', 'SUCCESS', {
-          source: candidate.source,
-          headline: candidate.headline,
-          canonicalUrl: candidate.canonicalUrl,
-          skippedDuplicate: saveResult.skippedDuplicate,
-          draftId: saveResult.data?.id ?? null,
-        });
-      } catch (error) {
-        errorCount += 1;
-        await logStep(
-          run.id,
-          'DB_UPDATE',
-          'ERROR',
-          {
-            source: candidate.source,
-            headline: candidate.headline,
-            canonicalUrl: candidate.canonicalUrl,
-          },
-          getErrorMessage(error),
-        );
+        const result = await processFreshCandidate(run.id, candidate);
+
+        errorCount += result.errorCount;
+
+        if (result.draftId) {
+          savedDraftIds.push(result.draftId);
+        }
       }
+    });
+
+    if (workerTasks.length > 0) {
+      await Promise.all(workerTasks);
     }
 
     await finishClaimRun(run.id, fetched.length > 0 ? 'SUCCESS' : 'ERROR');

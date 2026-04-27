@@ -131,12 +131,19 @@ function MiniTriple({ triple }: { triple: DraftGraphTriplePreview | null }) {
     return <p className="text-sm text-zinc-500">No primary claim preview available.</p>;
   }
 
+  const predicateLabel = triple.predicateSuggestion ?? triple.predicate;
+
   return (
     <div className="space-y-2">
       <p className="text-xs text-zinc-500">Primary claim</p>
       <p className="text-sm leading-7 text-zinc-100">
-        [{triple.subject}] [{triple.predicate}] [{triple.object}]
+        [{triple.subject}] [{predicateLabel}] [{triple.object}]
       </p>
+      {triple.predicateSuggestion ? (
+        <p className="text-xs text-zinc-500">
+          Canonical predicate: <span className="text-zinc-300">{triple.predicate}</span>
+        </p>
+      ) : null}
       <p className="break-all text-xs text-zinc-500">{triple.tripleId}</p>
     </div>
   );

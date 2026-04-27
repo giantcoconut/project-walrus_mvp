@@ -44,12 +44,33 @@ export interface FoundEntityResolution {
   matchedUrl: string | null;
 }
 
+export interface EntityResolutionCandidate {
+  termId: Hex;
+  label: string;
+  type: string;
+  data: string | null;
+  matchedUrl: string | null;
+  description: string | null;
+  image: string | null;
+  score: number;
+  positionCount: number;
+}
+
+export interface CandidateEntityResolution {
+  status: 'CANDIDATES';
+  metadata: EntityMetadata;
+  candidates: EntityResolutionCandidate[];
+}
+
 export interface MissingEntityResolution {
   status: 'MISSING';
   metadata: EntityMetadata;
 }
 
-export type EntityResolution = FoundEntityResolution | MissingEntityResolution;
+export type EntityResolution =
+  | FoundEntityResolution
+  | CandidateEntityResolution
+  | MissingEntityResolution;
 
 const ENTITY_SEARCH_QUERY = `
   query SearchEntities($pattern: String!, $limit: Int!) {
@@ -107,6 +128,28 @@ function normalizeCasefold(value: string): string {
   return normalizeWhitespace(value).toLowerCase();
 }
 
+function tokenizeMeaningful(value: string): string[] {
+  return normalizeCasefold(value)
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        !['the', 'and', 'for', 'with', 'from', 'into', 'over', 'under', 'that'].includes(token),
+    );
+}
+
+function hasMeaningfulTokenOverlap(left: string, right: string): boolean {
+  const leftTokens = new Set(tokenizeMeaningful(left));
+  const rightTokens = tokenizeMeaningful(right);
+
+  if (leftTokens.size === 0 || rightTokens.length === 0) {
+    return false;
+  }
+
+  return rightTokens.some((token) => leftTokens.has(token));
+}
+
 function getDomainFromUrl(value: string | null | undefined): string | null {
   if (!value || !value.trim()) {
     return null;
@@ -160,12 +203,19 @@ function scoreCandidate(metadata: EntityMetadata, candidate: GraphAtomCandidate)
   const candidateValue = getCandidateValue(candidate);
   const metadataDomain = getDomainFromUrl(metadata.url);
   const candidateDomain = getDomainFromUrl(candidateValue?.url);
+  const tokenOverlap = hasMeaningfulTokenOverlap(metadata.name, candidate.label);
   let score = 0;
 
   if (normalizedLabel === normalizedName) {
     score += 60;
   } else if (normalizedLabel.includes(normalizedName) || normalizedName.includes(normalizedLabel)) {
     score += 20;
+  }
+
+  if (tokenOverlap) {
+    score += 20;
+  } else if (normalizedLabel !== normalizedName) {
+    score -= 35;
   }
 
   if (candidate.type !== 'TextObject') {
@@ -210,6 +260,50 @@ function isHighConfidenceMatch(metadata: EntityMetadata, candidate: GraphAtomCan
   }
 
   return false;
+}
+
+function shouldSurfaceCandidate(
+  metadata: EntityMetadata,
+  score: number,
+  candidate: GraphAtomCandidate,
+): boolean {
+  if (score >= 55 && hasMeaningfulTokenOverlap(metadata.name, candidate.label)) {
+    return true;
+  }
+
+  if (score >= 70) {
+    return true;
+  }
+
+  if (
+    candidate.type !== 'TextObject' &&
+    score >= 45 &&
+    hasMeaningfulTokenOverlap(metadata.name, candidate.label)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildResolutionCandidate(
+  candidate: GraphAtomCandidate,
+  score: number,
+  positionCount: number,
+): EntityResolutionCandidate {
+  const candidateValue = getCandidateValue(candidate);
+
+  return {
+    termId: candidate.term_id as Hex,
+    label: candidate.label,
+    type: candidate.type,
+    data: candidate.data ?? null,
+    matchedUrl: candidateValue?.url?.trim() ? candidateValue.url.trim() : null,
+    description: candidateValue?.description?.trim() ? candidateValue.description.trim() : null,
+    image: candidateValue?.image?.trim() ? candidateValue.image.trim() : null,
+    score,
+    positionCount,
+  };
 }
 
 async function searchAtomsByName(name: string): Promise<GraphAtomCandidate[]> {
@@ -293,6 +387,23 @@ export async function resolveAndMapEntities(
         type: topCandidate.type,
         data: topCandidate.data ?? null,
         matchedUrl: candidateValue?.url?.trim() ? candidateValue.url.trim() : null,
+      });
+
+      continue;
+    }
+
+    const surfacedCandidates = scoredCandidates
+      .filter((entry) => shouldSurfaceCandidate(entity, entry.score, entry.candidate))
+      .slice(0, 3)
+      .map((entry) =>
+        buildResolutionCandidate(entry.candidate, entry.score, entry.signal.positionCount),
+      );
+
+    if (surfacedCandidates.length > 0) {
+      resolutions.set(entity.name, {
+        status: 'CANDIDATES',
+        metadata: entity,
+        candidates: surfacedCandidates,
       });
 
       continue;

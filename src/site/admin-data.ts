@@ -3,7 +3,11 @@ import { getAtomId, getTripleIdFromIds, inferAtomKind } from '../core/id-engine'
 import { resolveAndMapEntities, resolveGraphEntities } from '../services/entity-resolver';
 import type { EntityResolution } from '../services/entity-resolver';
 import type { Bytes32, ClaimDraftRow, EntityMetadata, TripleDraft } from '../types/schema';
-import type { FoundEntityResolution, MissingEntityResolution } from '../services/entity-resolver';
+import type {
+  CandidateEntityResolution,
+  FoundEntityResolution,
+  MissingEntityResolution,
+} from '../services/entity-resolver';
 
 export interface DraftTermInspectionRow {
   original: string;
@@ -19,6 +23,7 @@ export interface DraftGraphTriplePreview {
   title: string;
   subject: string;
   predicate: string;
+  predicateSuggestion: string | null;
   object: string;
   subjectTermId: Bytes32;
   predicateTermId: Bytes32;
@@ -41,6 +46,11 @@ export interface DraftGraphPreview {
     name: string;
     description: string;
     url: string | null;
+  }>;
+  entityCandidates: Array<{
+    name: string;
+    description: string;
+    candidates: CandidateEntityResolution['candidates'];
   }>;
 }
 
@@ -93,7 +103,9 @@ function renderTripleObject(tripleObject: TripleDraft['object']): string {
     return tripleObject;
   }
 
-  return `(${tripleObject.subject} ${tripleObject.predicate} ${renderTripleObject(tripleObject.object)})`;
+  const predicateLabel = tripleObject.predicateSuggestion ?? tripleObject.predicate;
+
+  return `(${tripleObject.subject} ${predicateLabel} ${renderTripleObject(tripleObject.object)})`;
 }
 
 function getResolvedPreviewId(
@@ -143,6 +155,7 @@ function resolveTriplePreview(
     title,
     subject: triple.subject,
     predicate: triple.predicate,
+    predicateSuggestion: triple.predicateSuggestion ?? null,
     object: renderTripleObject(triple.object),
     subjectTermId,
     predicateTermId,
@@ -181,6 +194,7 @@ function buildDraftGraphPreview(
       title: 'Source published URL',
       subject: draft.source,
       predicate: 'published',
+      predicateSuggestion: null,
       object: draft.url,
       subjectTermId: sourceTermId,
       predicateTermId: publishedTermId,
@@ -195,6 +209,7 @@ function buildDraftGraphPreview(
       title: 'URL asserts primary claim',
       subject: draft.url,
       predicate: 'asserts',
+      predicateSuggestion: null,
       object: primaryClaim.tripleId,
       subjectTermId: urlTermId,
       predicateTermId: assertsTermId,
@@ -222,6 +237,15 @@ function buildDraftGraphPreview(
         name,
         description: resolution.metadata.description,
         url: resolution.metadata.url,
+      })),
+    entityCandidates: Array.from(entityResolutions.entries())
+      .filter(
+        (entry): entry is [string, CandidateEntityResolution] => entry[1].status === 'CANDIDATES',
+      )
+      .map(([name, resolution]) => ({
+        name,
+        description: resolution.metadata.description,
+        candidates: resolution.candidates,
       })),
   };
 }

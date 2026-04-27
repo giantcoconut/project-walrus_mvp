@@ -14,6 +14,7 @@ import {
 type FlatTriple = {
   subject: string;
   predicate: Predicate;
+  predicateSuggestion?: string | null;
   object: string;
 };
 
@@ -24,38 +25,82 @@ interface ParserModelOutput {
   warnings: string[];
 }
 
-const DEFAULT_NVIDIA_MODEL = process.env.NVIDIA_MODEL ?? 'meta/llama3-70b-instruct';
+const DEFAULT_NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || 'meta/llama3-70b-instruct';
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+const NVIDIA_REQUEST_TIMEOUT_MS = 90_000;
 const PREDICATE_SYNONYMS: Record<string, Predicate> = {
-  announce: 'asserts',
-  announced: 'asserts',
-  announces: 'asserts',
+  announce: 'announced',
+  announced: 'announced',
+  announces: 'announced',
+  announcing: 'announced',
+  appoint: 'appointed',
+  appointed: 'appointed',
+  appoints: 'appointed',
+  appointing: 'appointed',
+  arrest: 'arrested',
+  arrested: 'arrested',
+  arrests: 'arrested',
+  arresting: 'arrested',
+  charge: 'charged',
+  charged: 'charged',
+  charges: 'charged',
+  charging: 'charged',
   expect: 'asserts',
   expected: 'asserts',
   expects: 'asserts',
   forecast: 'asserts',
   forecasts: 'asserts',
+  halt: 'halted',
+  halted: 'halted',
+  halts: 'halted',
+  halting: 'halted',
+  investigate: 'investigating',
+  investigated: 'investigating',
+  investigates: 'investigating',
+  investigating: 'investigating',
+  investigation: 'investigating',
   issue: 'asserts',
   issued: 'asserts',
   issues: 'asserts',
+  partner: 'partnered',
+  partnered: 'partnered',
+  partnering: 'partnered',
+  partners: 'partnered',
+  partners_with: 'partnered',
+  partnered_with: 'partnered',
   project: 'asserts',
   projected: 'asserts',
   projects: 'asserts',
+  raise: 'raised',
+  raised: 'raised',
+  raises: 'raised',
+  raising: 'raised',
+  raised_funds: 'raised',
+  raised_funding: 'raised',
+  sanction: 'sanctioned',
+  sanctioned: 'sanctioned',
+  sanctions: 'sanctioned',
+  sanctioning: 'sanctioned',
   said: 'asserts',
   says: 'asserts',
+  warn: 'warned',
+  warned: 'warned',
+  warns: 'warned',
+  warning: 'warned',
 };
+const modelResolutionCache = new Map<string, Promise<string>>();
 
 const OUTPUT_SCHEMA_DESCRIPTION = JSON.stringify(
   {
     headlineTriple: {
       subject: 'string',
-      predicate: `one of: ${MVP_PREDICATES.join(', ')}`,
+      predicate: 'short freeform relation string, e.g. joins, celebrates, delays, is_a, mentions',
       object: 'string',
     },
     contextTriples: [
       {
         subject: 'string',
-        predicate: `one of: ${MVP_PREDICATES.join(', ')}`,
+        predicate: 'short freeform relation string, e.g. is_a, founded, located_in',
         object: 'string',
       },
     ],
@@ -75,6 +120,8 @@ function createClient(apiKey: string): OpenAI {
   return new OpenAI({
     apiKey,
     baseURL: NVIDIA_BASE_URL,
+    timeout: NVIDIA_REQUEST_TIMEOUT_MS,
+    maxRetries: 0,
   });
 }
 
@@ -122,6 +169,240 @@ function normalizeEntityUrl(value: string | null): string | null {
   }
 }
 
+function stripEdgePunctuation(value: string): string {
+  return value.replace(/^[^A-Za-z0-9À-ÿ]+|[^A-Za-z0-9À-ÿ]+$/g, '');
+}
+
+function startsWithUppercaseLetter(value: string): boolean {
+  const trimmed = stripEdgePunctuation(value);
+
+  if (!trimmed) {
+    return false;
+  }
+
+  const first = trimmed.charAt(0);
+  return first === first.toUpperCase() && first !== first.toLowerCase();
+}
+
+function extractHeadlineEntityPhrases(headline: string): string[] {
+  const connectorWords = new Set(['of', 'the', 'and', 'for', 'to', 'in', 'on', 'at', 'de', 'la']);
+  const tokens = headline.split(/\s+/).map((token) => token.trim()).filter(Boolean);
+  const phrases: string[] = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (!token || !startsWithUppercaseLetter(token)) {
+      continue;
+    }
+
+    const phraseTokens = [stripEdgePunctuation(token)];
+    let cursor = index + 1;
+
+    while (cursor < tokens.length) {
+      const nextToken = tokens[cursor];
+      const stripped = stripEdgePunctuation(nextToken ?? '');
+
+      if (!stripped) {
+        break;
+      }
+
+      if (startsWithUppercaseLetter(stripped) || connectorWords.has(stripped.toLowerCase())) {
+        phraseTokens.push(stripped);
+        cursor += 1;
+        continue;
+      }
+
+      break;
+    }
+
+    const phrase = phraseTokens.join(' ').trim();
+
+    if (phrase.length > 0) {
+      phrases.push(phrase);
+    }
+
+    index = cursor - 1;
+  }
+
+  return Array.from(new Set(phrases));
+}
+
+function normalizeSurfaceForCompare(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9à-ÿ]+/gi, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function getEditDistance(left: string, right: string): number {
+  const leftLength = left.length;
+  const rightLength = right.length;
+  const table = Array.from({ length: leftLength + 1 }, () =>
+    new Array<number>(rightLength + 1).fill(0),
+  );
+
+  for (let row = 0; row <= leftLength; row += 1) {
+    table[row]![0] = row;
+  }
+
+  for (let column = 0; column <= rightLength; column += 1) {
+    table[0]![column] = column;
+  }
+
+  for (let row = 1; row <= leftLength; row += 1) {
+    for (let column = 1; column <= rightLength; column += 1) {
+      const substitutionCost = left[row - 1] === right[column - 1] ? 0 : 1;
+
+      table[row]![column] = Math.min(
+        table[row - 1]![column]! + 1,
+        table[row]![column - 1]! + 1,
+        table[row - 1]![column - 1]! + substitutionCost,
+      );
+    }
+  }
+
+  return table[leftLength]![rightLength]!;
+}
+
+function findHeadlineSurfaceMatch(value: string, headlinePhrases: string[]): string | null {
+  const normalizedValue = normalizeSurfaceForCompare(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const exactMatch = headlinePhrases.find(
+    (phrase) => normalizeSurfaceForCompare(phrase) === normalizedValue,
+  );
+
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const valueTokens = normalizedValue.split(' ');
+  let bestMatch: { phrase: string; distance: number } | null = null;
+
+  for (const phrase of headlinePhrases) {
+    const normalizedPhrase = normalizeSurfaceForCompare(phrase);
+    const phraseTokens = normalizedPhrase.split(' ');
+
+    if (phraseTokens.length !== valueTokens.length) {
+      continue;
+    }
+
+    const distance = getEditDistance(normalizedValue, normalizedPhrase);
+    const threshold = Math.min(3, Math.max(1, Math.floor(normalizedPhrase.length * 0.15)));
+
+    if (distance <= threshold && (!bestMatch || distance < bestMatch.distance)) {
+      bestMatch = {
+        phrase,
+        distance,
+      };
+    }
+  }
+
+  return bestMatch?.phrase ?? null;
+}
+
+function extractHeadlinePhraseTokens(headlinePhrases: string[]): string[] {
+  return Array.from(
+    new Set(
+      headlinePhrases.flatMap((phrase) =>
+        normalizeSurfaceForCompare(phrase)
+          .split(' ')
+          .map((token) => token.trim())
+          .filter((token) => token.length > 0),
+      ),
+    ),
+  );
+}
+
+function findHeadlineTokenSurfaceMatch(value: string, headlinePhraseTokens: string[]): string | null {
+  const normalizedValue = normalizeSurfaceForCompare(value);
+
+  if (!normalizedValue || normalizedValue.includes(' ')) {
+    return null;
+  }
+
+  let bestMatch: { token: string; distance: number } | null = null;
+
+  for (const token of headlinePhraseTokens) {
+    const distance = getEditDistance(normalizedValue, token);
+    const threshold = normalizedValue.length >= 6 ? 2 : 1;
+
+    if (distance <= threshold && (!bestMatch || distance < bestMatch.distance)) {
+      bestMatch = {
+        token,
+        distance,
+      };
+    }
+  }
+
+  return bestMatch?.token ?? null;
+}
+
+function restoreTripleSurfaceForms(
+  triple: FlatTriple,
+  headlinePhrases: string[],
+  headlinePhraseTokens: string[],
+): FlatTriple {
+  const subjectMatch = findHeadlineSurfaceMatch(triple.subject, headlinePhrases);
+  const objectMatch = findHeadlineSurfaceMatch(triple.object, headlinePhrases);
+  const taxonomyObjectMatch =
+    triple.predicate === 'is_a'
+      ? findHeadlineTokenSurfaceMatch(triple.object, headlinePhraseTokens)
+      : null;
+
+  return {
+    ...triple,
+    subject: subjectMatch ?? triple.subject,
+    object: objectMatch ?? taxonomyObjectMatch ?? triple.object,
+  };
+}
+
+function restoreSurfaceForms(
+  payload: ParserModelOutput,
+  headline: string,
+): ParserModelOutput {
+  const headlinePhrases = extractHeadlineEntityPhrases(headline);
+  const headlinePhraseTokens = extractHeadlinePhraseTokens(headlinePhrases);
+
+  if (headlinePhrases.length === 0) {
+    return payload;
+  }
+
+  const restoredHeadlineTriple = restoreTripleSurfaceForms(
+    payload.headlineTriple,
+    headlinePhrases,
+    headlinePhraseTokens,
+  );
+  const restoredContextTriples = payload.contextTriples.map((triple) =>
+    restoreTripleSurfaceForms(triple, headlinePhrases, headlinePhraseTokens),
+  );
+
+  const restoredEntityMetadataEntries = Object.entries(payload.entityMetadata).map(([key, value]) => {
+    const restoredKey = findHeadlineSurfaceMatch(key, headlinePhrases) ?? key;
+    const restoredName = findHeadlineSurfaceMatch(value.name, headlinePhrases) ?? value.name;
+
+    return [
+      restoredKey,
+      {
+        ...value,
+        name: restoredName,
+      } satisfies EntityMetadata,
+    ] as const;
+  });
+
+  return {
+    ...payload,
+    headlineTriple: restoredHeadlineTriple,
+    contextTriples: restoredContextTriples,
+    entityMetadata: Object.fromEntries(restoredEntityMetadataEntries),
+  };
+}
+
 function isPredicate(value: unknown): value is Predicate {
   return typeof value === 'string' && MVP_PREDICATES.includes(value as Predicate);
 }
@@ -143,12 +424,21 @@ function isFlatTriple(value: unknown): value is FlatTriple {
 }
 
 function normalizePredicate(value: unknown, warnings: string[], contextLabel: string): Predicate {
-  if (isPredicate(value)) {
-    return value;
-  }
-
   if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase().replace(/\s+/g, '_');
+    const trimmed = value.trim();
+
+    if (trimmed.length === 0) {
+      warnings.push(
+        `[PARSER] Repaired predicate in ${contextLabel}: empty string -> "asserts"`,
+      );
+      return 'asserts';
+    }
+
+    if (isPredicate(trimmed)) {
+      return trimmed;
+    }
+
+    const normalized = trimmed.toLowerCase().replace(/\s+/g, '_');
 
     if (isPredicate(normalized)) {
       warnings.push(
@@ -176,6 +466,26 @@ function normalizePredicate(value: unknown, warnings: string[], contextLabel: st
     `[PARSER] Repaired predicate in ${contextLabel}: "${String(value)}" -> "asserts"`,
   );
   return 'asserts';
+}
+
+function getPredicateSuggestion(value: unknown, canonicalPredicate: Predicate): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = trimmed.toLowerCase().replace(/\s+/g, '_');
+
+  if (normalized === canonicalPredicate) {
+    return null;
+  }
+
+  return trimmed;
 }
 
 function isEntityMetadata(value: unknown): value is EntityMetadata {
@@ -233,9 +543,12 @@ function normalizeTriple(
     warnings.push(`[PARSER] Repaired ${contextLabel}: missing object -> "${object}"`);
   }
 
+  const canonicalPredicate = normalizePredicate(candidate.predicate, warnings, contextLabel);
+
   return {
     subject,
-    predicate: normalizePredicate(candidate.predicate, warnings, contextLabel),
+    predicate: canonicalPredicate,
+    predicateSuggestion: getPredicateSuggestion(candidate.predicate, canonicalPredicate),
     object,
   };
 }
@@ -331,11 +644,17 @@ function buildSystemPrompt(): string {
     'You are an expert Ontologist extracting Semantic Triples from news.',
     'You MUST respond with ONLY valid JSON.',
     'Do not use markdown formatting.',
-    `Use only these predicates: [${MVP_PREDICATES.join(', ')}].`,
+    `The downstream graph uses a canonical predicate set: [${MVP_PREDICATES.join(', ')}].`,
+    'In this response, predicate should be the most semantically accurate short relation phrase from the headline or context.',
+    'Do not force predicate into the canonical set. Canonical mapping happens downstream.',
+    'Prefer concise lowercase verbs or snake_case relation phrases.',
     'The JSON must match this exact structure:',
     OUTPUT_SCHEMA_DESCRIPTION,
     'headlineTriple must contain the single main event from the headline.',
     'contextTriples must contain supporting triples such as entity definitions with is_a when useful.',
+    'Preserve named entities exactly as they appear in the headline whenever possible.',
+    'Do not autocorrect, respell, or normalize proper nouns, place names, people, organizations, products, or event titles.',
+    'If the headline says Strait, do not rewrite it as straight.',
     'For every extracted entity, include entityMetadata keyed by the exact label string used in the triples.',
     'If you extract an entity, provide a short encyclopedic description and its official URL so we can mint it as a rich Schema.org Thing.',
     'Return null for entityMetadata.url when the official website is not confidently known.',
@@ -371,14 +690,77 @@ function getStatusCode(error: unknown): number | null {
   return null;
 }
 
+function getRawErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+async function resolveConfiguredModelId(client: OpenAI): Promise<string> {
+  const configuredModel = DEFAULT_NVIDIA_MODEL;
+
+  if (configuredModel.includes('/')) {
+    return configuredModel;
+  }
+
+  const cacheKey = configuredModel;
+  const cached = modelResolutionCache.get(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const resolutionPromise = client.models
+    .list()
+    .then((response) => {
+      const availableIds = response.data
+        .map((model) => model.id?.trim())
+        .filter((id): id is string => Boolean(id));
+
+      const exactMatch = availableIds.find((id) => id === configuredModel);
+
+      if (exactMatch) {
+        return exactMatch;
+      }
+
+      const suffixMatches = availableIds.filter((id) => id.endsWith(`/${configuredModel}`));
+
+      if (suffixMatches.length === 1) {
+        return suffixMatches[0]!;
+      }
+
+      if (suffixMatches.length > 1) {
+        throw new Error(
+          `Configured NVIDIA_MODEL "${configuredModel}" matched multiple provider IDs: ${suffixMatches.join(', ')}`,
+        );
+      }
+
+      throw new Error(
+        `Configured NVIDIA_MODEL "${configuredModel}" was not found in NVIDIA models.list(). Available examples: ${availableIds
+          .slice(0, 12)
+          .join(', ')}`,
+      );
+    })
+    .catch((error) => {
+      modelResolutionCache.delete(cacheKey);
+      throw error;
+    });
+
+  modelResolutionCache.set(cacheKey, resolutionPromise);
+  return resolutionPromise;
+}
+
 async function requestStructuredOutput(
   client: OpenAI,
   headline: string,
   canonicalUrl: string,
   canonicalSource: string,
 ): Promise<ParserModelOutput> {
+  const resolvedModelId = await resolveConfiguredModelId(client);
   const completion = await client.chat.completions.create({
-    model: DEFAULT_NVIDIA_MODEL,
+    model: resolvedModelId,
     temperature: 0.1,
     response_format: {
       type: 'json_object',
@@ -402,7 +784,7 @@ async function requestStructuredOutput(
   }
 
   const payload = JSON.parse(content) as unknown;
-  return normalizeModelOutput(payload, headline);
+  return restoreSurfaceForms(normalizeModelOutput(payload, headline), headline);
 }
 
 function normalizeEntityMetadata(
@@ -474,6 +856,10 @@ export async function parseHeadline(
       };
     }
 
-    throw error;
+    throw new Error(
+      `NVIDIA parser failed for model "${DEFAULT_NVIDIA_MODEL}" with status ${
+        statusCode ?? 'unknown'
+      }: ${getRawErrorMessage(error)}`,
+    );
   }
 }

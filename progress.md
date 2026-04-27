@@ -258,6 +258,57 @@ This file tracks completed work as the project moves forward.
   - fetched headline items per feed
   - fresh items selected for parsing
   - skipped items with duplicate reason (`db` or `local`)
+- Added the first public protocol-entry route at `/create`
+- Wired `/create` into the public navigation as the user-side claim creation surface
+- Framed the next product phase directly in the UI:
+  - wallet connection and chain readiness
+  - public claim composition and protocol write previews
+  - future staking and position-taking on created claims
+- Added the first working public Intuition create workbench on `/create` with:
+  - wallet connection and active-network switching for Intuition mainnet/testnet
+  - live atom cost and claim cost reads from the protocol
+  - single atom creation for `Thing`, `Person`, `Organization`, `Account (CAIP-10)`, and raw URI/data flows
+  - deterministic atom existence checks before create
+  - array-based `createAtoms(...)` execution with one item under the hood
+- Added public GraphQL-backed protocol helpers and route handlers for:
+  - live atom search by label
+  - canonical atom lookup by exact label
+  - IPFS pinning for rich atom metadata before on-chain creation
+- Added human-first claim creation on `/create` with:
+  - subject / predicate / object atom search
+  - optional exact-match toggle per field
+  - inline missing-atom creation that returns directly into the claim flow
+  - deterministic triple existence checks before `createTriples(...)`
+  - list-style tag mode that resolves the active network’s canonical `has tag` predicate candidate automatically
+- Added `infrastrucure-clarity.md` to capture protocol assumptions, heuristics, and unresolved product questions for the public write phase
+- Verified `tsc --noEmit` passes after the public Intuition create-flow implementation
+- Simplified the public `/create` route by removing the internal-facing “phase now / phase later” section from the page
+- Reworked atom creation UX so existing-atom lookup now happens automatically in the background from the current name/value instead of through a primary manual “check existing atom” button
+- Added inline “Use existing” actions for background atom matches in the public atom creator
+- Verified `tsc --noEmit` passes after the `/create` page UX cleanup
+- Reduced above-the-fold copy and moved the `/create` page directly into the action surface faster
+- Reworked the public create workbench into a tabbed layout with:
+  - `Claim creation` as the default first tab
+  - `Atom creation` as a secondary tab instead of the first long section
+  - a compact shared session strip for wallet state, network, and live protocol costs
+- Verified `tsc --noEmit` passes after the claim-first tabbed `/create` layout update
+- Refined the `/create` workbench UX again by:
+  - moving the Atom/Claim tabs into the actual creation surface instead of the separate session strip
+  - switching the default public tab back to `Atom creation`
+  - cleaning the connected-wallet state so the main action no longer still reads `Connect wallet` after connection
+  - adding a live pulsing network indicator on the active `testnet` / `mainnet` selector
+  - renaming claim mode copy from protocol jargon (`Standard triple` / `Tag claim`) to clearer product labels (`Direct claim` / `Add a tag`)
+- Verified `tsc --noEmit` passes after the `/create` session and tab UX refinement
+- Split list creation out from direct claim creation by:
+  - removing the temporary tag-style mode from the public claim composer
+  - keeping direct claim creation distinct from list creation inside the public write surface
+  - initially sketching a dedicated public `/lists` route as a possible future list-builder surface
+- Verified `tsc --noEmit` passes after the direct-claims versus lists separation
+- Kept list creation visible inside the main `/create` hub by:
+  - adding `Lists` as a first-class third tab beside `Atom creation` and `Claim creation`
+  - keeping the lists concept inside the same creation hub instead of forcing a separate public page
+  - updating `/create` hero copy so the page now clearly covers atoms, claims, and lists together
+- Verified `tsc --noEmit` passes after the create-hub lists integration
 - Upgraded `/admin/runs/[id]` to show:
   - fetched headline list
   - fresh headline list
@@ -298,6 +349,63 @@ This file tracks completed work as the project moves forward.
   - direct semantic links into each draft inspector
 - Added batch draft inspection in `src/site/admin-data.ts` so run pages can render semantic previews for multiple drafts efficiently
 - Added a fallback fetched-headline derivation path on the run page using fresh + skipped items when older traces do not expose fetched items cleanly
+- Reformatted `/admin/drafts/[id]` to fix long-value overflow and narrow-column collapse by:
+  - replacing squeezed atom rows with stacked term cards
+  - wrapping IDs and URLs in dedicated monospace blocks
+  - widening the draft sidebar column
+  - constraining raw payload JSON to a scrollable viewport
+- Verified `tsc --noEmit` passes after the draft-page formatting fix
+- Restructured the public site header so navigation now reads as:
+  - `Home`
+  - `Claims`
+  - `Learn`
+- Added `/learn` as a future-facing public education route with a structured coming-soon layout for protocol and product onboarding
+- Verified `tsc --noEmit` passes after the public nav and learn-page update
+- Hardened `src/services/ai-parser.ts` to resolve provider-prefixed NVIDIA model IDs dynamically via `models.list()`
+- Added clearer parser error surfacing that now includes the configured model and upstream status in failure messages
+- Verified `scripts/test-brain.ts` succeeds again against the live NVIDIA parser path after the model-resolution fix
+- Added an explicit NVIDIA parser request timeout so stalled model calls fail fast instead of blocking the admin fetch indefinitely
+- Parallelized manual fetch parsing in `src/services/manual-fetch.ts` with a bounded worker pool so fresh headlines are processed in small batches instead of strictly one-by-one
+- Verified `tsc --noEmit` passes after the manual-fetch throughput fix
+- Restored the shared feed lookback from `10` back to `3` headlines per source after live admin runs showed the larger batch was overwhelming the current parser runtime
+- Verified `scripts/test-ingestion.ts` completes successfully again with the smaller `3 + 3` fetch window, including fresh draft saves to Supabase
+- Cleaned stale `GEMINI` labels in `scripts/test-ingestion.ts` so parser logs now use provider-neutral `PARSER` wording
+- Reintroduced `@google/genai` and added `scripts/benchmark-parsers.ts` plus `npm run benchmark:parsers` for direct Gemini-vs-NVIDIA latency checks on fixed sample headlines
+- Benchmarked smaller NVIDIA candidates against `gemini-2.5-flash` and selected `nemotron-mini-4b-instruct` as the first fast model that both supports the current JSON-mode parser contract and completes reliably
+- Updated `.env` so the active NVIDIA parser model is now `nemotron-mini-4b-instruct`
+- Verified `scripts/test-brain.ts` succeeds again on the live parser path with the new NVIDIA model
+- Re-ran NVIDIA model selection after reviewing payload quality and benchmarked higher-quality candidates including `mistral-nemotron`, `deepseek-v3.1-terminus`, `minimax-m2.7`, and `mistral-small-3.1-24b-instruct-2503`
+- Promoted `mistral-nemotron` to the active NVIDIA parser model after it completed reliably and produced materially richer triples and entity metadata than `nemotron-mini-4b-instruct`
+- Verified `scripts/test-brain.ts` succeeds with `mistral-nemotron` and yields usable entity metadata on live sample headlines
+- Reverted a prompt-only semantic steering experiment in `src/services/ai-parser.ts` after concluding the deeper limitation is the narrow predicate vocabulary rather than prompt wording alone
+- Implemented the selected dual-predicate draft model:
+  - `predicate` remains the canonical graph-safe predicate
+  - `predicateSuggestion` preserves the model's natural-language relation in draft payloads
+- Updated `src/services/ai-parser.ts` so the model now emits freeform relation phrases while the parser maps them into the canonical predicate enum
+- Updated admin and public triple rendering so views can surface the natural predicate suggestion while still showing the canonical predicate when they differ
+- Verified the live parser returns dual predicate data, e.g. `predicate: "asserts"` with `predicateSuggestion: "joins"` for the Madonna/Coachella sample
+- Expanded the canonical MVP predicate set in `src/types/schema.ts` to better cover real news actions, including:
+  - `announced`
+  - `investigating`
+  - `charged`
+  - `arrested`
+  - `sanctioned`
+  - `halted`
+  - `warned`
+  - `partnered`
+  - `raised`
+  - `appointed`
+- Updated predicate normalization in `src/services/ai-parser.ts` so common tense and phrasing variants map into the new canonical predicates cleanly
+- Verified `tsc --noEmit` passes after the predicate expansion
+- Upgraded `src/services/entity-resolver.ts` from a binary `FOUND/MISSING` model to also return `CANDIDATES` for ambiguous entity matches
+- Added resolver candidate details including label, type, description, image, URL, score, and vault-position signal for admin review
+- Updated `/admin/drafts/[id]` to surface “Possible matches found” with candidate atom cards instead of only showing missing/found rich-entity states
+- Verified `tsc --noEmit` passes after the resolver candidate-state upgrade
+
+- Tightened candidate surfacing in `src/services/entity-resolver.ts` so weak label-only matches are penalized and fewer unrelated atoms are shown as possible reuse options
+- Renamed draft UI candidate scoring language from implied confidence to explicit `match score` so the score is presented honestly as a heuristic ranking signal
+- Hardened `src/services/ai-parser.ts` to preserve exact headline surface forms for named entities and avoid accidental proper-noun autocorrection
+- Verified with a live parser sample that `Strait of Hormuz` is preserved correctly and its `is_a` context no longer collapses into `straight`
 
 #### Notes
 

@@ -10,6 +10,7 @@
     "test:dna": "tsx scripts/test-dna.ts",
     "test:brain": "tsx scripts/test-brain.ts",
     "test:ingestion": "tsx scripts/test-ingestion.ts",
+    "benchmark:parsers": "tsx scripts/benchmark-parsers.ts",
     "test:db": "tsx scripts/test-db.ts",
     "admin:cli": "tsx scripts/admin-cli.ts",
     "poll:rss": "tsx src/listeners/rss-poller.ts"
@@ -21,10 +22,11 @@
   "dependencies": {
     "@0xintuition/protocol": "^2.0.2",
     "@0xintuition/sdk": "^2.0.2",
+    "@google/genai": "^1.50.1",
     "@supabase/supabase-js": "^2.101.1",
     "autoprefixer": "^10.4.20",
     "clsx": "^2.1.1",
-    "dotenv": "^17.4.0",
+    "dotenv": "^17.4.2",
     "framer-motion": "^12.38.0",
     "next": "^14.2.35",
     "openai": "^6.34.0",

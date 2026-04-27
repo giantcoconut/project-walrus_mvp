@@ -164,12 +164,12 @@ function dedupeCandidates(candidates: CandidateHeadline[], existingUrls: Set<str
 }
 
 async function stageHeadline(candidate: CandidateHeadline): Promise<ParsedNewsPayload | null> {
-  console.log(`[GEMINI] Parsing: "${truncateHeadline(candidate.headline)}"`);
+  console.log(`[PARSER] Parsing: "${truncateHeadline(candidate.headline)}"`);
 
   const payload = await parseHeadline(candidate.headline, candidate.canonicalUrl, candidate.source);
   const contextEntityCount = Object.keys(payload.entityMetadata).length;
 
-  console.log(`[GEMINI] Success. Found ${contextEntityCount} context entities.`);
+  console.log(`[PARSER] Success. Found ${contextEntityCount} context entities.`);
 
   const saveResult = await saveDraft({
     source: candidate.source,

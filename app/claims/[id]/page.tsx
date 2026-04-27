@@ -18,14 +18,23 @@ function renderTripleObject(object: TripleDraft['object']): string {
     return object;
   }
 
-  return `(${object.subject} ${object.predicate} ${renderTripleObject(object.object)})`;
+  const predicateLabel = object.predicateSuggestion ?? object.predicate;
+
+  return `(${object.subject} ${predicateLabel} ${renderTripleObject(object.object)})`;
 }
 
 function TripleRow({ triple }: { triple: TripleDraft }) {
+  const predicateLabel = triple.predicateSuggestion ?? triple.predicate;
+
   return (
     <div className="grid gap-3 border-b border-line/70 py-4 sm:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)] sm:items-start sm:gap-6">
       <p className="text-sm leading-7 text-ink">{triple.subject}</p>
-      <p className="text-[0.72rem] uppercase tracking-terminal text-muted sm:pt-1">{triple.predicate}</p>
+      <div className="sm:pt-1">
+        <p className="text-[0.72rem] uppercase tracking-terminal text-muted">{predicateLabel}</p>
+        {triple.predicateSuggestion ? (
+          <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-line">{triple.predicate}</p>
+        ) : null}
+      </div>
       <p className="text-sm leading-7 text-ink">{renderTripleObject(triple.object)}</p>
     </div>
   );

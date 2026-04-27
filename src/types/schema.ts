@@ -6,11 +6,21 @@ export const MVP_PREDICATES = [
   'published',
   'asserts',
   'mentions',
+  'announced',
   'acquired',
   'hacked',
   'launched',
   'sued',
   'approved',
+  'investigating',
+  'charged',
+  'arrested',
+  'sanctioned',
+  'halted',
+  'warned',
+  'partnered',
+  'raised',
+  'appointed',
   'will_reach',
   'will_depeg',
   'is_a',
@@ -23,6 +33,7 @@ export type ApprovedSource = 'The Block' | 'BBC World News';
 export interface TripleDraft {
   subject: BaseAtom;
   predicate: Predicate;
+  predicateSuggestion?: string | null;
   object: BaseAtom | TripleDraft;
 }
 
