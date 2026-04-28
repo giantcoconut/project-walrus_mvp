@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
+import { PublicWalletButton } from '../shared/public-wallet-button';
+
 const NAV_ITEMS = [
   { href: '/', label: 'Home', note: 'Overview' },
   { href: '/claims', label: 'Claims', note: 'Published graph' },
@@ -30,30 +32,33 @@ export function SiteHeader() {
           </p>
         </Link>
 
-        <nav className="flex flex-wrap items-center gap-2 sm:gap-3">
-          {NAV_ITEMS.map((item) => {
-            const isActive = item.href === '/'
-              ? pathname === '/'
-              : pathname === item.href || pathname.startsWith(`${item.href}/`);
+        <div className="flex flex-wrap items-center gap-3">
+          <nav className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {NAV_ITEMS.map((item) => {
+              const isActive = item.href === '/'
+                ? pathname === '/'
+                : pathname === item.href || pathname.startsWith(`${item.href}/`);
 
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`rounded-lg border px-3 py-2 transition-colors duration-150 ${
-                  isActive
-                    ? 'border-ink/15 bg-white/70 text-ink'
-                    : 'border-transparent text-muted hover:border-line hover:bg-white/50 hover:text-ink'
-                }`}
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="text-sm">{item.label}</span>
-                  <span className="hidden text-[0.72rem] text-muted sm:inline">{item.note}</span>
-                </div>
-              </Link>
-            );
-          })}
-        </nav>
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`rounded-lg border px-3 py-2 transition-colors duration-150 ${
+                    isActive
+                      ? 'border-ink/15 bg-white/70 text-ink'
+                      : 'border-transparent text-muted hover:border-line hover:bg-white/50 hover:text-ink'
+                  }`}
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm">{item.label}</span>
+                    <span className="hidden text-[0.72rem] text-muted sm:inline">{item.note}</span>
+                  </div>
+                </Link>
+              );
+            })}
+          </nav>
+          <PublicWalletButton />
+        </div>
       </div>
     </header>
   );

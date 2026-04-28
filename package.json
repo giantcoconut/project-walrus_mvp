@@ -23,7 +23,9 @@
     "@0xintuition/protocol": "^2.0.2",
     "@0xintuition/sdk": "^2.0.2",
     "@google/genai": "^1.50.1",
+    "@rainbow-me/rainbowkit": "^2.2.10",
     "@supabase/supabase-js": "^2.101.1",
+    "@tanstack/react-query": "^5.90.5",
     "autoprefixer": "^10.4.20",
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
@@ -35,7 +37,8 @@
     "react-dom": "^18.3.1",
     "rss-parser": "^3.13.0",
     "tailwindcss": "^3.4.17",
-    "viem": "^2.47.10"
+    "viem": "^2.48.4",
+    "wagmi": "^2.19.5"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",

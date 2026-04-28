@@ -1,9 +1,9 @@
 'use client';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useAccountModal, useConnectModal } from '@rainbow-me/rainbowkit';
+import { useAccount, useChainId, useSwitchChain, useWalletClient } from 'wagmi';
 import {
   createPublicClient,
-  createWalletClient,
-  custom,
   encodeFunctionData,
   formatEther,
   getAddress,
@@ -12,6 +12,7 @@ import {
   parseEther,
   stringToHex,
   type Hash,
+  type WalletClient,
 } from 'viem';
 
 import {
@@ -100,11 +101,6 @@ interface SearchAtomFieldProps {
   onClear: () => void;
 }
 
-interface EthereumProvider {
-  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-  on?: (event: string, listener: (...args: unknown[]) => void) => void;
-  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
-}
 const EMPTY_ATOM_FORM: AtomFormState = {
   schemaType: 'Thing',
   name: '',
@@ -125,15 +121,7 @@ const INLINE_CREATE_LABELS: Record<ClaimFieldKey, string> = {
 };
 
 const MAX_IMAGE_SIZE_BYTES = 6 * 1024 * 1024;
-const SUPPORTED_IMAGE_MIME_TYPES = new Set([
-  'image/',
-]);
-
-function getEthereumProvider(): EthereumProvider | null {
-  const provider = (window as Window & { ethereum?: EthereumProvider }).ethereum;
-
-  return provider ?? null;
-}
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/']);
 
 function getExplorerTxUrl(network: PublicIntuitionNetwork, hash: Hash): string {
   return `${getIntuitionNetwork(network).explorerUrl}/tx/${hash}`;
@@ -733,6 +721,7 @@ function SearchAtomField({
 function AtomCreatorPanel({
   network,
   walletState,
+  walletClient,
   publicClient,
   title,
   body,
@@ -742,6 +731,7 @@ function AtomCreatorPanel({
 }: {
   network: PublicIntuitionNetwork;
   walletState: WalletState;
+  walletClient?: WalletClient | null;
   publicClient: ReturnType<typeof createPublicClient>;
   title: string;
   body: string;
@@ -1021,10 +1011,8 @@ function AtomCreatorPanel({
     setStatus('Resolving the deterministic atom ID and preparing the protocol create flow...');
 
     try {
-      const provider = getEthereumProvider();
-
-      if (!provider || !walletState.address) {
-        throw new Error('No browser wallet is available.');
+      if (!walletClient || !walletState.address) {
+        throw new Error('No connected wallet client is available.');
       }
 
       const preparedInput = prepared ?? (await prepareAtomInput(form, network, publicClient));
@@ -1078,11 +1066,6 @@ function AtomCreatorPanel({
       });
 
       setStatus('Building the array-based createAtoms transaction, even for a single atom...');
-
-      const walletClient = createWalletClient({
-        chain: INTUITION_CHAINS[network],
-        transport: custom(provider),
-      });
 
       const txHash = await walletClient.sendTransaction({
         account: walletState.address as `0x${string}`,
@@ -1826,10 +1809,12 @@ function BatchAtomRowEditor({
 function BatchAtomCreatorPanel({
   network,
   walletState,
+  walletClient,
   publicClient,
 }: {
   network: PublicIntuitionNetwork;
   walletState: WalletState;
+  walletClient?: WalletClient | null;
   publicClient: ReturnType<typeof createPublicClient>;
 }) {
   const [rows, setRows] = useState<BatchAtomRow[]>([createBatchAtomRow()]);
@@ -2152,10 +2137,8 @@ function BatchAtomCreatorPanel({
     setStatus('Waiting for wallet...');
 
     try {
-      const provider = getEthereumProvider();
-
-      if (!provider || !walletState.address) {
-        throw new Error('No browser wallet is available.');
+      if (!walletClient || !walletState.address) {
+        throw new Error('No connected wallet client is available.');
       }
 
       const atomDatas = preparedRows.map((row) => stringToHex(row.dataString));
@@ -2166,11 +2149,6 @@ function BatchAtomCreatorPanel({
         abi: MULTIVAULT_ABI,
         functionName: 'createAtoms',
         args: [atomDatas, assets],
-      });
-
-      const walletClient = createWalletClient({
-        chain: INTUITION_CHAINS[network],
-        transport: custom(provider),
       });
 
       const txHash = await walletClient.sendTransaction({
@@ -2325,16 +2303,17 @@ function BatchAtomCreatorPanel({
 }
 
 export function CreateWorkbench() {
+  const { address, isConnected, status: accountStatus } = useAccount();
+  const chainId = useChainId();
+  const { data: walletClient } = useWalletClient();
+  const { openConnectModal } = useConnectModal();
+  const { openAccountModal } = useAccountModal();
+  const { switchChainAsync } = useSwitchChain();
   const [network, setNetwork] = useState<PublicIntuitionNetwork>('testnet');
   const [activeTab, setActiveTab] = useState<CreateWorkbenchTab>('atom');
   const [atomCreationMode, setAtomCreationMode] = useState<AtomCreationMode>('single');
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
-  const [wallet, setWallet] = useState<WalletState>({
-    status: 'idle',
-    address: null,
-    chainId: null,
-    error: null,
-  });
+  const [walletUiError, setWalletUiError] = useState<string | null>(null);
   const [claimSelections, setClaimSelections] = useState<Record<ClaimFieldKey, IntuitionAtomSearchResult | null>>({
     subject: null,
     predicate: null,
@@ -2371,6 +2350,33 @@ export function CreateWorkbench() {
       }),
     [network, networkConfig.rpcUrl],
   );
+
+  const wallet = useMemo<WalletState>(() => {
+    if (isConnected && address) {
+      return {
+        status: 'connected',
+        address: getAddress(address),
+        chainId: chainId ?? null,
+        error: walletUiError,
+      };
+    }
+
+    if (accountStatus === 'connecting' || accountStatus === 'reconnecting') {
+      return {
+        status: 'connecting',
+        address: address ? getAddress(address) : null,
+        chainId: chainId ?? null,
+        error: walletUiError,
+      };
+    }
+
+    return {
+      status: walletUiError ? 'error' : 'idle',
+      address: address ? getAddress(address) : null,
+      chainId: chainId ?? null,
+      error: walletUiError,
+    };
+  }, [accountStatus, address, chainId, isConnected, walletUiError]);
 
   const canWrite = wallet.status === 'connected' && wallet.chainId === networkConfig.chainId;
   const walletNetworkConfig = getIntuitionNetworkByChainId(wallet.chainId);
@@ -2413,82 +2419,10 @@ export function CreateWorkbench() {
   }, [networkConfig.multiVault, publicClient]);
 
   useEffect(() => {
-    const provider = getEthereumProvider();
-
-    if (!provider) {
-      return;
+    if (accountStatus === 'connected' || accountStatus === 'reconnecting') {
+      setWalletUiError(null);
     }
-
-    const ethereumProvider = provider;
-
-    let ignore = false;
-
-    async function syncWalletState() {
-      try {
-        const accounts = (await ethereumProvider.request({ method: 'eth_accounts' })) as unknown;
-        const firstAccount = Array.isArray(accounts) ? (accounts[0] as string | undefined) : undefined;
-
-        if (!firstAccount) {
-          if (!ignore) {
-            setWallet({
-              status: 'idle',
-              address: null,
-              chainId: null,
-              error: null,
-            });
-          }
-          return;
-        }
-
-        const chainId = (await ethereumProvider.request({ method: 'eth_chainId' })) as unknown;
-        const normalizedChainId = typeof chainId === 'string' ? Number.parseInt(chainId, 16) : null;
-
-        if (!ignore) {
-          setWallet({
-            status: 'connected',
-            address: getAddress(firstAccount),
-            chainId: normalizedChainId,
-            error: null,
-          });
-        }
-      } catch {
-        if (!ignore) {
-          setWallet((current) => ({
-            ...current,
-            error: 'Unable to refresh wallet state.',
-          }));
-        }
-      }
-    }
-
-    const handleAccountsChanged = (accounts: unknown) => {
-      if (!Array.isArray(accounts) || !accounts[0] || typeof accounts[0] !== 'string') {
-        setWallet({
-          status: 'idle',
-          address: null,
-          chainId: null,
-          error: null,
-        });
-        return;
-      }
-
-      void syncWalletState();
-    };
-
-    const handleChainChanged = () => {
-      void syncWalletState();
-    };
-
-    void syncWalletState();
-    ethereumProvider.on?.('accountsChanged', handleAccountsChanged);
-    ethereumProvider.on?.('chainChanged', handleChainChanged);
-
-    return () => {
-      ignore = true;
-      ethereumProvider.removeListener?.('accountsChanged', handleAccountsChanged);
-      ethereumProvider.removeListener?.('chainChanged', handleChainChanged);
-    };
-  }, []);
+  }, [accountStatus, address, chainId]);
 
   function setSelection(field: ClaimFieldKey, atom: IntuitionAtomSearchResult | null) {
     setClaimSelections((current) => ({
@@ -2501,122 +2435,18 @@ export function CreateWorkbench() {
   }
 
   async function connectWallet() {
-    const provider = getEthereumProvider();
+    setWalletUiError(null);
 
-    if (!provider) {
-      setWallet({
-        status: 'error',
-        address: null,
-        chainId: null,
-        error: 'No browser wallet was detected.',
-      });
+    if (!openConnectModal) {
+      setWalletUiError('No wallet connector is available in this browser.');
       return;
     }
-
-    setWallet((current) => ({
-      ...current,
-      status: 'connecting',
-      error: null,
-    }));
-
-    try {
-      const accounts = (await provider.request({
-        method: 'eth_requestAccounts',
-      })) as string[];
-      const chainIdHex = (await provider.request({
-        method: 'eth_chainId',
-      })) as string;
-
-      if (!accounts[0]) {
-        throw new Error('The wallet did not return an account.');
-      }
-
-      setWallet({
-        status: 'connected',
-        address: getAddress(accounts[0]),
-        chainId: Number.parseInt(chainIdHex, 16),
-        error: null,
-      });
-    } catch (caughtError) {
-      setWallet({
-        status: 'error',
-        address: null,
-        chainId: null,
-        error: caughtError instanceof Error ? caughtError.message : 'Wallet connection failed.',
-      });
-    }
-  }
-
-  async function switchWalletNetwork(targetNetwork: PublicIntuitionNetwork) {
-    const provider = getEthereumProvider();
-    const targetNetworkConfig = getIntuitionNetwork(targetNetwork);
-
-    if (!provider) {
-      setWallet((current) => ({
-        ...current,
-        status: 'error',
-        error: 'No browser wallet was detected.',
-      }));
-      return;
-    }
-
-    setIsSwitchingNetwork(true);
-
-    const chainIdHex = `0x${targetNetworkConfig.chainId.toString(16)}`;
-
-    try {
-      try {
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: chainIdHex }],
-        });
-      } catch (caughtError) {
-        const errorWithCode = caughtError as { code?: number };
-
-        if (errorWithCode.code === 4902) {
-          await provider.request({
-            method: 'wallet_addEthereumChain',
-            params: [
-              {
-                chainId: chainIdHex,
-                chainName: targetNetworkConfig.name,
-                nativeCurrency: {
-                  name: targetNetworkConfig.nativeSymbol,
-                  symbol: targetNetworkConfig.nativeSymbol,
-                  decimals: 18,
-                },
-                rpcUrls: [targetNetworkConfig.rpcUrl],
-                blockExplorerUrls: [targetNetworkConfig.explorerUrl],
-              },
-            ],
-          });
-        } else {
-          setWallet((current) => ({
-            ...current,
-            error: caughtError instanceof Error ? caughtError.message : 'Network switch failed.',
-          }));
-          return;
-        }
-      }
-
-      const nextChainIdHex = (await provider.request({
-        method: 'eth_chainId',
-      })) as string;
-
-      setWallet((current) => ({
-        ...current,
-        status: current.address ? 'connected' : 'idle',
-        chainId: Number.parseInt(nextChainIdHex, 16),
-        error: null,
-      }));
-      setNetwork(targetNetwork);
-    } finally {
-      setIsSwitchingNetwork(false);
-    }
+    openConnectModal();
   }
 
   async function handleNetworkSelection(targetNetwork: PublicIntuitionNetwork) {
     setNetwork(targetNetwork);
+    setWalletUiError(null);
 
     if (wallet.status !== 'connected') {
       return;
@@ -2626,7 +2456,20 @@ export function CreateWorkbench() {
       return;
     }
 
-    await switchWalletNetwork(targetNetwork);
+    if (!switchChainAsync) {
+      setWalletUiError('Wallet network switching is unavailable for this connector.');
+      return;
+    }
+
+    setIsSwitchingNetwork(true);
+
+    try {
+      await switchChainAsync({ chainId: getIntuitionNetwork(targetNetwork).chainId });
+    } catch (caughtError) {
+      setWalletUiError(caughtError instanceof Error ? caughtError.message : 'Network switch failed.');
+    } finally {
+      setIsSwitchingNetwork(false);
+    }
   }
 
   async function handleClaimCreate() {
@@ -2704,21 +2547,14 @@ export function CreateWorkbench() {
         functionName: 'getTripleCost',
       })) as bigint;
 
-      const provider = getEthereumProvider();
-
-      if (!provider) {
-        throw new Error('No browser wallet was detected.');
+      if (!walletClient) {
+        throw new Error('No connected wallet client is available.');
       }
 
       const data = encodeFunctionData({
         abi: MULTIVAULT_ABI,
         functionName: 'createTriples',
         args: [[subject.termId], [predicate.termId], [object.termId], [tripleCost]],
-      });
-
-      const walletClient = createWalletClient({
-        chain: INTUITION_CHAINS[network],
-        transport: custom(provider),
       });
 
       const txHash = await walletClient.sendTransaction({
@@ -2826,9 +2662,13 @@ export function CreateWorkbench() {
 
           <div className="flex flex-wrap items-center gap-3">
             {wallet.status === 'connected' ? (
-              <span className="inline-flex rounded-full border border-[#1f8a62]/20 bg-[#1f8a62]/8 px-4 py-2 text-sm text-[#1f8a62]">
+              <button
+                type="button"
+                onClick={openAccountModal ?? undefined}
+                className="inline-flex rounded-full border border-[#1f8a62]/20 bg-[#1f8a62]/8 px-4 py-2 text-sm text-[#1f8a62] transition-colors duration-150 hover:border-[#1f8a62]/40 hover:bg-[#1f8a62]/12"
+              >
                 Wallet connected
-              </span>
+              </button>
             ) : (
               <button
                 type="button"
@@ -2959,6 +2799,7 @@ export function CreateWorkbench() {
                   key={`${inlineTarget}-${inlineSeed}`}
                   network={network}
                   walletState={wallet}
+                  walletClient={walletClient ?? null}
                   publicClient={publicClient}
                   title={`Inline atom creation for ${INLINE_CREATE_LABELS[inlineTarget]}`}
                   body="Create the missing atom here, then drop straight back into the claim."
@@ -3131,6 +2972,7 @@ export function CreateWorkbench() {
                 <AtomCreatorPanel
                   network={network}
                   walletState={wallet}
+                  walletClient={walletClient ?? null}
                   publicClient={publicClient}
                   title="Atom creation"
                   body="Create the building block you need, then bring it straight into a claim."
@@ -3139,6 +2981,7 @@ export function CreateWorkbench() {
                 <BatchAtomCreatorPanel
                   network={network}
                   walletState={wallet}
+                  walletClient={walletClient ?? null}
                   publicClient={publicClient}
                 />
               )}

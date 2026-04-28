@@ -3,6 +3,7 @@ import { Newsreader, Public_Sans } from 'next/font/google';
 import type { ReactNode } from 'react';
 
 import { RootChrome } from '../components/shared/root-chrome';
+import { WalletProvider } from '../components/shared/wallet-provider';
 import './globals.css';
 
 const editorial = Newsreader({
@@ -26,10 +27,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body className={`${editorial.variable} ${publicSans.variable} grain font-sans`}>
-        <div className="min-h-screen">
-          <RootChrome />
-          <main>{children}</main>
-        </div>
+        <WalletProvider>
+          <div className="min-h-screen">
+            <RootChrome />
+            <main>{children}</main>
+          </div>
+        </WalletProvider>
       </body>
     </html>
   );
