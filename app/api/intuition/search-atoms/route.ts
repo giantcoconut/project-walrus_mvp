@@ -17,6 +17,10 @@ interface GraphAtomCandidate {
   label: string;
   type: string;
   data?: string | null;
+  creator?: {
+    id?: string | null;
+    label?: string | null;
+  } | null;
   value?: {
     thing?: GraphValueDetails | null;
     organization?: GraphValueDetails | null;
@@ -40,6 +44,10 @@ const SEARCH_ATOMS_QUERY = `
       label
       type
       data
+      creator {
+        id
+        label
+      }
       value {
         thing { description image url }
         organization { description image url }
@@ -58,13 +66,17 @@ const SEARCH_ATOMS_QUERY = `
 const SEARCH_ATOMS_EXACT_QUERY = `
   query SearchAtomsExact($pattern: String!, $limit: Int!) {
     atoms(
-      where: { label: { _eq: $pattern } }
+      where: { label: { _ilike: $pattern } }
       limit: $limit
     ) {
       term_id
       label
       type
       data
+      creator {
+        id
+        label
+      }
       value {
         thing { description image url }
         organization { description image url }
@@ -158,6 +170,8 @@ function mapCandidate(candidate: GraphAtomCandidate): IntuitionAtomSearchResult 
     description: value?.description?.trim() ? value.description.trim() : null,
     image: value?.image?.trim() ? value.image.trim() : null,
     url: value?.url?.trim() ? value.url.trim() : null,
+    creatorId: candidate.creator?.id?.trim() ? candidate.creator.id.trim() : null,
+    creatorLabel: candidate.creator?.label?.trim() ? candidate.creator.label.trim() : null,
     positionCount: signal.positionCount,
     totalShares: signal.totalShares.toString(),
   };

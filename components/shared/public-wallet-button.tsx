@@ -45,6 +45,7 @@ export function PublicWalletButton() {
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#1f8a62]" />
         </span>
         {network?.name ?? `Chain ${chainId}`}
+        <span aria-hidden="true" className="text-xs leading-none text-muted">▾</span>
       </button>
       <button
         type="button"

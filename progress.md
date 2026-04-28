@@ -406,6 +406,23 @@ This file tracks completed work as the project moves forward.
 - Renamed draft UI candidate scoring language from implied confidence to explicit `match score` so the score is presented honestly as a heuristic ranking signal
 - Hardened `src/services/ai-parser.ts` to preserve exact headline surface forms for named entities and avoid accidental proper-noun autocorrection
 - Verified with a live parser sample that `Strait of Hormuz` is preserved correctly and its `is_a` context no longer collapses into `straight`
+- Replaced the Lists placeholder in `components/public/create-workbench.tsx` with a real Intuition list builder based on the canonical `has tag` predicate atom
+- Implemented list entry modes for:
+  - single atom add
+  - manual batch adds
+  - CSV-assisted member import
+- Wired list creation to Intuition `createTriples(...)` so each list entry is submitted as:
+  - subject = member atom
+  - predicate = canonical `has tag`
+  - object = list atom
+- Added list-atom search and inline list-atom creation directly inside the Lists tab
+- Added CSV member resolution that:
+  - searches exact human-readable names against the graph
+  - auto-resolves confident matches
+  - prefers atoms created by the connected wallet when multiple exact matches exist
+  - flags ambiguous or missing rows for manual review instead of guessing
+- Extended shared atom search results with creator metadata so public creation flows can surface and prefer wallet-owned atoms when appropriate
+- Verified `tsc --noEmit` passes after the list-builder and search-resolution upgrade
 
 #### Notes
 

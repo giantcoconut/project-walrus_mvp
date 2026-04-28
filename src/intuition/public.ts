@@ -21,6 +21,8 @@ export interface IntuitionAtomSearchResult {
   description: string | null;
   image: string | null;
   url: string | null;
+  creatorId: string | null;
+  creatorLabel: string | null;
   positionCount: number;
   totalShares: string;
 }

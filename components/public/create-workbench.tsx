@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useAccountModal, useConnectModal } from '@rainbow-me/rainbowkit';
-import { useAccount, useChainId, useSwitchChain, useWalletClient } from 'wagmi';
+import { useAccount, useChainId, useWalletClient } from 'wagmi';
 import {
   createPublicClient,
   encodeFunctionData,
@@ -27,10 +27,11 @@ import {
 } from '../../src/intuition/public';
 
 type AtomSchemaType = 'Thing' | 'Person' | 'Organization' | 'Account' | 'Raw';
-type AtomCreationMode = 'single' | 'batch';
+type AtomCreationMode = 'single' | 'batch' | 'csv';
 type ClaimFieldKey = 'subject' | 'predicate' | 'object';
 type CreateWorkbenchTab = 'claim' | 'atom' | 'lists';
 type ImageUploadPhase = 'idle' | 'uploading' | 'uploaded' | 'failed';
+type ListEntryMode = 'single' | 'batch' | 'csv';
 
 interface WalletState {
   status: 'idle' | 'connecting' | 'connected' | 'error';
@@ -86,6 +87,11 @@ interface PreparedBatchAtomRow extends PreparedAtomInput {
   supportWei: bigint;
 }
 
+interface CsvAtomRecord extends BatchAtomRow {
+  csvLineNumber: number;
+  csvSource: Record<string, string>;
+}
+
 interface SearchAtomFieldProps {
   label: string;
   fieldKey: ClaimFieldKey;
@@ -95,10 +101,33 @@ interface SearchAtomFieldProps {
   placeholder: string;
   disabled?: boolean;
   lockedNote?: string | undefined;
+  preferredCreatorAddress?: string | null;
   onSelect: (atom: IntuitionAtomSearchResult) => void;
   onExactChange: (value: boolean) => void;
   onRequestInlineCreate: (field: ClaimFieldKey, seed: string) => void;
   onClear: () => void;
+}
+
+interface ListBatchMemberRow {
+  id: string;
+  member: IntuitionAtomSearchResult | null;
+  exact: boolean;
+}
+
+interface ListCsvImportRow {
+  id: string;
+  lineNumber: number;
+  memberName: string;
+  selected: IntuitionAtomSearchResult | null;
+  candidates: IntuitionAtomSearchResult[];
+  status: 'resolved' | 'ambiguous' | 'missing';
+  note: string;
+}
+
+interface ListAtomModalState {
+  target: 'list' | 'single-member' | 'batch-member';
+  seed: string;
+  rowId?: string;
 }
 
 const EMPTY_ATOM_FORM: AtomFormState = {
@@ -122,6 +151,10 @@ const INLINE_CREATE_LABELS: Record<ClaimFieldKey, string> = {
 
 const MAX_IMAGE_SIZE_BYTES = 6 * 1024 * 1024;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/']);
+const MAX_CSV_BATCH_SIZE = 20;
+const MAX_LIST_BATCH_SIZE = 20;
+const HAS_TAG_PREDICATE_TERM_ID =
+  '0x7ec36d201c842dc787b45cb5bb753bea4cf849be3908fb1b0a7d067c3c3cc1f5' as Hash;
 
 function getExplorerTxUrl(network: PublicIntuitionNetwork, hash: Hash): string {
   return `${getIntuitionNetwork(network).explorerUrl}/tx/${hash}`;
@@ -139,8 +172,85 @@ function formatAddress(address: string | null): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function formatTokenAmount(value: bigint, symbol: string): string {
+  const formatted = Number.parseFloat(formatEther(value)).toFixed(3).replace(/\.?0+$/, '');
+  return `${formatted} ${symbol}`;
+}
+
 function getNetworkSearchLabel(network: PublicIntuitionNetwork): string {
   return `Searching ${getIntuitionNetwork(network).name}`;
+}
+
+function normalizeSearchText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function matchesCreatorAddress(atom: IntuitionAtomSearchResult, walletAddress?: string | null): boolean {
+  if (!walletAddress) {
+    return false;
+  }
+
+  const normalizedWallet = walletAddress.trim().toLowerCase();
+
+  return (
+    atom.creatorId?.trim().toLowerCase() === normalizedWallet ||
+    atom.creatorLabel?.trim().toLowerCase() === normalizedWallet
+  );
+}
+
+function sortAtomsForWalletPreference(
+  results: IntuitionAtomSearchResult[],
+  walletAddress?: string | null,
+): IntuitionAtomSearchResult[] {
+  if (!walletAddress) {
+    return results;
+  }
+
+  return results.slice().sort((left, right) => {
+    const leftPreferred = matchesCreatorAddress(left, walletAddress) ? 1 : 0;
+    const rightPreferred = matchesCreatorAddress(right, walletAddress) ? 1 : 0;
+
+    if (leftPreferred !== rightPreferred) {
+      return rightPreferred - leftPreferred;
+    }
+
+    if (left.positionCount !== right.positionCount) {
+      return right.positionCount - left.positionCount;
+    }
+
+    return right.totalShares.localeCompare(left.totalShares);
+  });
+}
+
+async function searchAtoms(
+  network: PublicIntuitionNetwork,
+  query: string,
+  exact: boolean,
+  limit: number,
+  preferredCreatorAddress?: string | null,
+  signal?: AbortSignal,
+): Promise<IntuitionAtomSearchResult[]> {
+  const requestInit: RequestInit = {};
+
+  if (signal) {
+    requestInit.signal = signal;
+  }
+
+  const response = await fetch(
+    `/api/intuition/search-atoms?network=${network}&q=${encodeURIComponent(query)}&exact=${exact ? '1' : '0'}&limit=${limit}`,
+    requestInit,
+  );
+
+  const payload = (await response.json()) as {
+    results?: IntuitionAtomSearchResult[];
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(payload.error ?? 'Atom search failed.');
+  }
+
+  return sortAtomsForWalletPreference(payload.results ?? [], preferredCreatorAddress);
 }
 
 function getImagePreviewCandidates(value?: string | null): string[] {
@@ -306,6 +416,19 @@ function createBatchAtomRow(seed = ''): BatchAtomRow {
   };
 }
 
+function createListBatchMemberRow(): ListBatchMemberRow {
+  const randomId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  return {
+    id: randomId,
+    member: null,
+    exact: true,
+  };
+}
+
 function parseOptionalSupport(value: string): bigint | null {
   const normalized = value.trim();
 
@@ -352,6 +475,231 @@ function validateBatchAtomRow(row: BatchAtomRow): string[] {
   }
 
   return errors;
+}
+
+function slugifyCsvHeader(header: string): string {
+  return header.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let currentCell = '';
+  let currentRow: string[] = [];
+  let insideQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    const nextCharacter = text[index + 1];
+
+    if (character === '"') {
+      if (insideQuotes && nextCharacter === '"') {
+        currentCell += '"';
+        index += 1;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+      continue;
+    }
+
+    if (character === ',' && !insideQuotes) {
+      currentRow.push(currentCell);
+      currentCell = '';
+      continue;
+    }
+
+    if ((character === '\n' || character === '\r') && !insideQuotes) {
+      if (character === '\r' && nextCharacter === '\n') {
+        index += 1;
+      }
+
+      currentRow.push(currentCell);
+      currentCell = '';
+
+      const hasValues = currentRow.some((cell) => cell.trim().length > 0);
+      if (hasValues) {
+        rows.push(currentRow);
+      }
+
+      currentRow = [];
+      continue;
+    }
+
+    currentCell += character;
+  }
+
+  if (insideQuotes) {
+    throw new Error('CSV contains an unclosed quoted value.');
+  }
+
+  currentRow.push(currentCell);
+  if (currentRow.some((cell) => cell.trim().length > 0)) {
+    rows.push(currentRow);
+  }
+
+  return rows;
+}
+
+function normalizeCsvSchemaType(value: string): AtomSchemaType | null {
+  const normalized = slugifyCsvHeader(value);
+
+  if (!normalized) {
+    return 'Thing';
+  }
+
+  if (normalized === 'thing') return 'Thing';
+  if (normalized === 'person') return 'Person';
+  if (normalized === 'organization') return 'Organization';
+  if (normalized === 'account' || normalized === 'caip10' || normalized === 'account_caip10') return 'Account';
+  if (normalized === 'raw' || normalized === 'raw_data' || normalized === 'uri' || normalized === 'data') return 'Raw';
+
+  return null;
+}
+
+function mapCsvRecordToAtom(
+  values: Record<string, string>,
+  csvLineNumber: number,
+): { atom: CsvAtomRecord; errors: string[] } {
+  const schemaType = normalizeCsvSchemaType(values.schema_type ?? '');
+  const errors: string[] = [];
+
+  if (!schemaType) {
+    errors.push('schema_type must be Thing, Person, Organization, Account, or Raw.');
+  }
+
+  const resolvedSchemaType = schemaType ?? 'Thing';
+  const atom = createBatchAtomRow() as CsvAtomRecord;
+  atom.csvLineNumber = csvLineNumber;
+  atom.csvSource = values;
+  atom.schemaType = resolvedSchemaType;
+  atom.name = values.name?.trim() ?? '';
+  atom.description = values.description?.trim() ?? '';
+  atom.url = values.url?.trim() ?? '';
+  atom.image = (values.image_url ?? values.image ?? '').trim();
+  atom.support = (values.deposit ?? '').trim();
+  atom.email = values.email?.trim() ?? '';
+  atom.identifier = values.identifier?.trim() ?? '';
+  atom.accountChainId = (values.account_chain_id ?? values.chain_id ?? '1').trim() || '1';
+  atom.accountAddress = (values.account_address ?? values.address ?? '').trim();
+  atom.rawData = (values.raw_data ?? values.data ?? '').trim();
+
+  if (resolvedSchemaType === 'Account' && !atom.accountAddress && values.name?.trim()) {
+    atom.accountAddress = values.name.trim();
+  }
+
+  if (resolvedSchemaType === 'Raw' && !atom.rawData && values.name?.trim()) {
+    atom.rawData = values.name.trim();
+  }
+
+  if (isRichAtomSchemaType(resolvedSchemaType) && !atom.name) {
+    errors.push('name is required for Thing, Person, and Organization atoms.');
+  }
+
+  if (resolvedSchemaType === 'Account' && !atom.accountAddress) {
+    errors.push('account_address is required for Account atoms.');
+  }
+
+  if (resolvedSchemaType === 'Raw' && !atom.rawData) {
+    errors.push('raw_data is required for Raw atoms.');
+  }
+
+  return { atom, errors };
+}
+
+function parseCsvAtomFile(text: string): { atoms: CsvAtomRecord[]; errors: string[] } {
+  const rows = parseCsvRows(text);
+
+  if (rows.length === 0) {
+    throw new Error('CSV is empty.');
+  }
+
+  const headerRow = rows[0];
+  if (!headerRow) {
+    throw new Error('CSV is empty.');
+  }
+
+  const headers = headerRow.map(slugifyCsvHeader);
+  if (!headers.includes('name') && !headers.includes('raw_data') && !headers.includes('account_address')) {
+    throw new Error('CSV must include at least a name, raw_data, or account_address column.');
+  }
+
+  const atoms: CsvAtomRecord[] = [];
+  const errors: string[] = [];
+
+  rows.slice(1).forEach((cells, rowIndex) => {
+    const values = headers.reduce<Record<string, string>>((accumulator, header, headerIndex) => {
+      accumulator[header] = (cells[headerIndex] ?? '').trim();
+      return accumulator;
+    }, {});
+
+    if (Object.values(values).every((value) => value === '')) {
+      return;
+    }
+
+    const csvLineNumber = rowIndex + 2;
+    const { atom, errors: rowMappingErrors } = mapCsvRecordToAtom(values, csvLineNumber);
+    atoms.push(atom);
+
+    rowMappingErrors.forEach((error) => {
+      errors.push(`Line ${csvLineNumber}: ${error}`);
+    });
+  });
+
+  if (atoms.length === 0) {
+    throw new Error('CSV did not contain any usable atoms.');
+  }
+
+  if (atoms.length > MAX_CSV_BATCH_SIZE) {
+    errors.push(`CSV import is limited to ${MAX_CSV_BATCH_SIZE} atoms per transaction.`);
+  }
+
+  return { atoms, errors };
+}
+
+function parseListCsvFile(text: string): { rows: Array<{ lineNumber: number; memberName: string }>; errors: string[] } {
+  const rows = parseCsvRows(text);
+
+  if (rows.length === 0) {
+    throw new Error('CSV is empty.');
+  }
+
+  const headerRow = rows[0];
+
+  if (!headerRow) {
+    throw new Error('CSV is empty.');
+  }
+
+  const headers = headerRow.map(slugifyCsvHeader);
+  const preferredHeader = ['name', 'member', 'atom', 'label'].find((header) => headers.includes(header));
+
+  if (!preferredHeader) {
+    throw new Error('CSV must include a name, member, atom, or label column.');
+  }
+
+  const headerIndex = headers.indexOf(preferredHeader);
+  const parsedRows: Array<{ lineNumber: number; memberName: string }> = [];
+  const errors: string[] = [];
+
+  rows.slice(1).forEach((cells, rowIndex) => {
+    const memberName = (cells[headerIndex] ?? '').trim();
+    const lineNumber = rowIndex + 2;
+
+    if (!memberName) {
+      errors.push(`Line ${lineNumber}: ${preferredHeader} is required.`);
+      return;
+    }
+
+    parsedRows.push({ lineNumber, memberName });
+  });
+
+  if (parsedRows.length === 0) {
+    throw new Error('CSV did not contain any usable members.');
+  }
+
+  if (parsedRows.length > MAX_LIST_BATCH_SIZE) {
+    errors.push(`CSV import is limited to ${MAX_LIST_BATCH_SIZE} list entries per transaction.`);
+  }
+
+  return { rows: parsedRows, errors };
 }
 
 async function prepareAtomInput(
@@ -509,6 +857,7 @@ function SearchAtomField({
   placeholder,
   disabled,
   lockedNote,
+  preferredCreatorAddress,
   onSelect,
   onExactChange,
   onRequestInlineCreate,
@@ -550,23 +899,15 @@ function SearchAtomField({
       setError(null);
 
       try {
-        const response = await fetch(
-          `/api/intuition/search-atoms?network=${network}&q=${encodeURIComponent(normalizedQuery)}&exact=${exact ? '1' : '0'}&limit=8`,
-          {
-            signal: controller.signal,
-          },
+        const searchedResults = await searchAtoms(
+          network,
+          normalizedQuery,
+          exact,
+          8,
+          preferredCreatorAddress,
+          controller.signal,
         );
-
-        const payload = (await response.json()) as {
-          results?: IntuitionAtomSearchResult[];
-          error?: string;
-        };
-
-        if (!response.ok) {
-          throw new Error(payload.error ?? 'Atom search failed.');
-        }
-
-        setResults(payload.results ?? []);
+        setResults(searchedResults);
       } catch (caughtError) {
         if (controller.signal.aborted) {
           return;
@@ -585,7 +926,7 @@ function SearchAtomField({
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [disabled, exact, network, query, selected]);
+  }, [disabled, exact, network, preferredCreatorAddress, query, selected]);
 
   return (
     <div className="space-y-3 rounded-[1.15rem] border border-line/80 bg-white/60 p-5">
@@ -731,13 +1072,13 @@ function AtomCreatorPanel({
 }: {
   network: PublicIntuitionNetwork;
   walletState: WalletState;
-  walletClient?: WalletClient | null;
+  walletClient?: WalletClient | null | undefined;
   publicClient: ReturnType<typeof createPublicClient>;
   title: string;
   body: string;
-  initialForm?: AtomFormState;
-  compact?: boolean;
-  onResolved?: (atom: IntuitionAtomSearchResult) => void;
+  initialForm?: AtomFormState | undefined;
+  compact?: boolean | undefined;
+  onResolved?: ((atom: IntuitionAtomSearchResult) => void) | undefined;
 }) {
   const [form, setForm] = useState<AtomFormState>(initialForm ?? EMPTY_ATOM_FORM);
   const [status, setStatus] = useState<string | null>(null);
@@ -915,6 +1256,15 @@ function AtomCreatorPanel({
     clearImageUploadState();
   }
 
+  function resetAtomForm() {
+    setForm(initialForm ?? EMPTY_ATOM_FORM);
+    setPrepared(null);
+    setResult(null);
+    setError(null);
+    setStatus(null);
+    clearImageUploadState();
+  }
+
   async function handleImageFileSelection(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
 
@@ -1047,6 +1397,8 @@ function AtomCreatorPanel({
           description: form.description.trim() || null,
           image: form.image.trim() || null,
           url: form.url.trim() || null,
+          creatorId: null,
+          creatorLabel: null,
           positionCount: 0,
           totalShares: '0',
         });
@@ -1110,6 +1462,8 @@ function AtomCreatorPanel({
         description: form.description.trim() || null,
         image: form.image.trim() || null,
         url: form.url.trim() || null,
+        creatorId: null,
+        creatorLabel: null,
         positionCount: 0,
         totalShares: '0',
       });
@@ -1420,16 +1774,32 @@ function AtomCreatorPanel({
           </div>
         ) : null}
         {result ? (
-          <AtomResultCard
-            title={result.kind === 'created' ? 'Atom confirmed' : 'Existing atom surfaced'}
-            body={
-              result.kind === 'created'
-                ? 'The atom was pinned if needed, then created through the array-based protocol function with one item.'
-                : 'The deterministic term already existed, so the flow surfaced it instead of sending a redundant create.'
-            }
-            network={network}
-            result={result}
-          />
+          <div className="space-y-3">
+            <AtomResultCard
+              title={result.kind === 'created' ? 'Atom confirmed' : 'Existing atom surfaced'}
+              body={
+                result.kind === 'created'
+                  ? 'The atom was pinned if needed, then created through the array-based protocol function with one item.'
+                  : 'The deterministic term already existed, so the flow surfaced it instead of sending a redundant create.'
+              }
+              network={network}
+              result={result}
+            />
+            {result.kind === 'created' ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={resetAtomForm}
+                  className="inline-flex rounded-full border border-ink/15 bg-ink px-4 py-2 text-sm text-paper transition-colors duration-150 hover:bg-[#3a2a23]"
+                >
+                  Clear form for another atom
+                </button>
+                <p className="text-sm leading-7 text-muted">
+                  This wipes the current atom fields so you can start the next one cleanly.
+                </p>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </div>
@@ -1528,7 +1898,7 @@ function BatchAtomRowEditor({
   return (
     <div className="rounded-[1.15rem] border border-line/80 bg-paper/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Row {index + 1}</p>
+        <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Atom {index + 1}</p>
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={row.schemaType}
@@ -1642,11 +2012,11 @@ function BatchAtomRowEditor({
                   <div className="rounded-[1rem] border border-line/80 bg-white/75 p-3">
                     <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Image preview</p>
                     <div className="mt-3 flex min-h-[12rem] items-center justify-center overflow-hidden rounded-[1rem] border border-line/80 bg-paper/60 p-4">
-                      <img
-                        src={previewUrl}
-                        alt={row.name.trim() || `Batch row ${index + 1} image preview`}
-                        className="max-h-[14rem] max-w-full object-contain"
-                      />
+                        <img
+                          src={previewUrl}
+                          alt={row.name.trim() || `Batch atom ${index + 1} image preview`}
+                          className="max-h-[14rem] max-w-full object-contain"
+                        />
                     </div>
                   </div>
                 ) : null}
@@ -1796,10 +2166,10 @@ function BatchAtomRowEditor({
           type="button"
           onClick={onAdd}
           disabled={busy}
-          className="inline-flex items-center gap-2 rounded-full border border-line bg-white/75 px-3 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center gap-2 rounded-full border border-ink bg-ink px-4 py-2 text-sm text-paper transition-colors duration-150 hover:bg-[#3a2a23] disabled:cursor-not-allowed disabled:opacity-60"
         >
           <span aria-hidden="true" className="text-base leading-none">+</span>
-          Add row
+          Add atom
         </button>
       </div>
     </div>
@@ -2054,12 +2424,12 @@ function BatchAtomCreatorPanel({
   async function handlePrepareBatch() {
     setIsPreparing(true);
     setError(null);
-    setStatus('Preparing rows...');
+    setStatus('Preparing atoms...');
     setResult(null);
 
     try {
-      const validationErrors = rows.reduce<Record<string, string[]>>((accumulator, row) => {
-        accumulator[row.id] = validateBatchAtomRow(row);
+      const validationErrors = rows.reduce<Record<string, string[]>>((accumulator, atom) => {
+        accumulator[atom.id] = validateBatchAtomRow(atom);
         return accumulator;
       }, {});
 
@@ -2067,7 +2437,7 @@ function BatchAtomCreatorPanel({
         setRowErrors(validationErrors);
         setPreparedRows(null);
         setStatus(null);
-        setError('Fix the row errors before reviewing the batch.');
+        setError('Fix the atom errors before reviewing the batch.');
         return;
       }
 
@@ -2081,7 +2451,7 @@ function BatchAtomCreatorPanel({
       const preparedErrors: Record<string, string[]> = {};
 
       for (const [index, row] of rows.entries()) {
-        const label = getAtomDisplayName(row) || `row ${index + 1}`;
+        const label = getAtomDisplayName(row) || `atom ${index + 1}`;
         setStatus(
           isRichAtomSchemaType(row.schemaType)
             ? `Pinning metadata for ${label}...`
@@ -2091,7 +2461,7 @@ function BatchAtomCreatorPanel({
         const preparedInput = await prepareAtomInput(row, network, publicClient);
         const supportWei = parseOptionalSupport(row.support) ?? 0n;
         preparedErrors[row.id] = preparedInput.exists
-          ? ['This atom already exists. Remove it from the batch or change the row.']
+          ? ['This atom already exists. Remove it from the batch or change the atom.']
           : [];
         prepared.push({
           ...preparedInput,
@@ -2106,7 +2476,7 @@ function BatchAtomCreatorPanel({
       if (Object.values(preparedErrors).some((errors) => errors.length > 0)) {
         setPreparedRows(null);
         setStatus(null);
-        setError('Review found existing atoms. Remove those rows before sending the batch.');
+        setError('Review found existing atoms. Remove those atoms before sending the batch.');
         return;
       }
 
@@ -2185,16 +2555,17 @@ function BatchAtomCreatorPanel({
               Review many atoms before one wallet step.
             </h3>
             <p className="max-w-3xl text-sm leading-7 text-muted">
-              Add rows, review the resolved atom data, then send one batch create transaction.
+              Add atoms, review the resolved atom data, then send one batch create transaction.
             </p>
           </div>
           <button
             type="button"
             onClick={addRow}
             disabled={busy}
-            className="inline-flex rounded-full border border-line bg-paper/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-full border border-ink bg-ink px-4 py-2 text-sm text-paper transition-colors duration-150 hover:bg-[#3a2a23] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Add row
+            <span aria-hidden="true" className="text-base leading-none">+</span>
+            Add atom
           </button>
         </div>
 
@@ -2255,7 +2626,7 @@ function BatchAtomCreatorPanel({
             disabled={busy}
             className="inline-flex rounded-full border border-line bg-paper/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isPreparing ? 'Preparing rows...' : 'Review batch'}
+            {isPreparing ? 'Preparing atoms...' : 'Review batch'}
           </button>
           <button
             type="button"
@@ -2302,17 +2673,1465 @@ function BatchAtomCreatorPanel({
   );
 }
 
+function CsvAtomImportPanel({
+  network,
+  walletState,
+  walletClient,
+  publicClient,
+}: {
+  network: PublicIntuitionNetwork;
+  walletState: WalletState;
+  walletClient?: WalletClient | null;
+  publicClient: ReturnType<typeof createPublicClient>;
+}) {
+  const [csvText, setCsvText] = useState('');
+  const [atoms, setAtoms] = useState<CsvAtomRecord[]>([]);
+  const [rowErrors, setRowErrors] = useState<Record<string, string[]>>({});
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  const [preparedAtoms, setPreparedAtoms] = useState<PreparedBatchAtomRow[] | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ txHash: Hash; atomIds: Hash[] } | null>(null);
+  const [isParsing, setIsParsing] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+
+  const networkConfig = getIntuitionNetwork(network);
+  const walletNetworkConfig = getIntuitionNetworkByChainId(walletState.chainId);
+  const canWrite = walletState.status === 'connected' && walletState.chainId === networkConfig.chainId;
+  const hasNetworkMismatch =
+    walletState.status === 'connected' &&
+    walletState.chainId !== null &&
+    walletState.chainId !== networkConfig.chainId;
+  const busy = isParsing || isPreparing || isCreating;
+
+  function clearPreparedState() {
+    setPreparedAtoms(null);
+    setResult(null);
+    setStatus(null);
+    setError(null);
+  }
+
+  function resetImport() {
+    setCsvText('');
+    setAtoms([]);
+    setRowErrors({});
+    setImportErrors([]);
+    clearPreparedState();
+  }
+
+  async function handleCsvFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    setIsParsing(true);
+    setError(null);
+    setStatus('Importing CSV...');
+
+    try {
+      const text = await file.text();
+      setCsvText(text);
+      const parsed = parseCsvAtomFile(text);
+      setAtoms(parsed.atoms);
+      setImportErrors(parsed.errors);
+      setRowErrors({});
+      setPreparedAtoms(null);
+      setResult(null);
+      setStatus(`Imported ${parsed.atoms.length} atoms from CSV.`);
+    } catch (caughtError) {
+      setAtoms([]);
+      setImportErrors([]);
+      setRowErrors({});
+      setPreparedAtoms(null);
+      setResult(null);
+      setStatus(null);
+      setError(caughtError instanceof Error ? caughtError.message : 'CSV import failed.');
+    } finally {
+      setIsParsing(false);
+      event.target.value = '';
+    }
+  }
+
+  async function handleParseCsvText() {
+    setIsParsing(true);
+    setError(null);
+    setStatus('Parsing CSV...');
+
+    try {
+      const parsed = parseCsvAtomFile(csvText);
+      setAtoms(parsed.atoms);
+      setImportErrors(parsed.errors);
+      setRowErrors({});
+      setPreparedAtoms(null);
+      setResult(null);
+      setStatus(`Imported ${parsed.atoms.length} atoms from CSV.`);
+    } catch (caughtError) {
+      setAtoms([]);
+      setImportErrors([]);
+      setRowErrors({});
+      setPreparedAtoms(null);
+      setResult(null);
+      setStatus(null);
+      setError(caughtError instanceof Error ? caughtError.message : 'CSV import failed.');
+    } finally {
+      setIsParsing(false);
+    }
+  }
+
+  async function handlePrepareCsvBatch() {
+    setIsPreparing(true);
+    setError(null);
+    setStatus('Validating atoms...');
+    setResult(null);
+
+    try {
+      const validationErrors = atoms.reduce<Record<string, string[]>>((accumulator, atom) => {
+        accumulator[atom.id] = validateBatchAtomRow(atom);
+        return accumulator;
+      }, {});
+
+      if (importErrors.length > 0) {
+        setRowErrors(validationErrors);
+        setPreparedAtoms(null);
+        setStatus(null);
+        setError('Fix the CSV import issues before reviewing the batch.');
+        return;
+      }
+
+      if (Object.values(validationErrors).some((errors) => errors.length > 0)) {
+        setRowErrors(validationErrors);
+        setPreparedAtoms(null);
+        setStatus(null);
+        setError('Fix the atom validation issues before reviewing the batch.');
+        return;
+      }
+
+      const atomCost = (await publicClient.readContract({
+        address: networkConfig.multiVault,
+        abi: MULTIVAULT_ABI,
+        functionName: 'getAtomCost',
+      })) as bigint;
+
+      const prepared: PreparedBatchAtomRow[] = [];
+      const preparedErrors: Record<string, string[]> = {};
+
+      for (const [index, atom] of atoms.entries()) {
+        const label = getAtomDisplayName(atom) || `atom ${index + 1}`;
+        setStatus(
+          isRichAtomSchemaType(atom.schemaType)
+            ? `Pinning metadata for ${label}...`
+            : `Preparing ${label}...`,
+        );
+
+        const preparedInput = await prepareAtomInput(atom, network, publicClient);
+        const supportWei = parseOptionalSupport(atom.support) ?? 0n;
+        preparedErrors[atom.id] = preparedInput.exists
+          ? ['This atom already exists. Remove it from the CSV or change the source data.']
+          : [];
+
+        prepared.push({
+          ...preparedInput,
+          rowId: atom.id,
+          supportWei,
+          asset: atomCost + supportWei,
+        });
+      }
+
+      setRowErrors(preparedErrors);
+
+      if (Object.values(preparedErrors).some((errors) => errors.length > 0)) {
+        setPreparedAtoms(null);
+        setStatus(null);
+        setError('Review found existing atoms. Remove those CSV atoms before sending the batch.');
+        return;
+      }
+
+      setPreparedAtoms(prepared);
+      setStatus(`Preview ready. ${prepared.length} atoms can be created in one transaction.`);
+    } catch (caughtError) {
+      setPreparedAtoms(null);
+      setStatus(null);
+      setError(caughtError instanceof Error ? caughtError.message : 'CSV batch preparation failed.');
+    } finally {
+      setIsPreparing(false);
+    }
+  }
+
+  async function handleCreateCsvBatch() {
+    if (!preparedAtoms || preparedAtoms.length === 0) {
+      setError('Review the CSV import before creating atoms.');
+      return;
+    }
+
+    if (!canWrite) {
+      setError('Connect a wallet on the selected Intuition network before creating atoms.');
+      return;
+    }
+
+    setIsCreating(true);
+    setError(null);
+    setStatus('Waiting for wallet approval...');
+
+    try {
+      if (!walletClient || !walletState.address) {
+        throw new Error('No connected wallet client is available.');
+      }
+
+      const atomDatas = preparedAtoms.map((atom) => stringToHex(atom.dataString));
+      const assets = preparedAtoms.map((atom) => atom.asset);
+      const value = assets.reduce((total, asset) => total + asset, 0n);
+
+      const data = encodeFunctionData({
+        abi: MULTIVAULT_ABI,
+        functionName: 'createAtoms',
+        args: [atomDatas, assets],
+      });
+
+      const txHash = await walletClient.sendTransaction({
+        account: walletState.address as `0x${string}`,
+        chain: INTUITION_CHAINS[network],
+        to: networkConfig.multiVault,
+        data,
+        value,
+      });
+
+      setStatus('Confirming transaction onchain...');
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      setResult({
+        txHash,
+        atomIds: preparedAtoms.map((atom) => atom.atomId),
+      });
+      setStatus('CSV atoms confirmed onchain.');
+    } catch (caughtError) {
+      setStatus(null);
+      setError(caughtError instanceof Error ? caughtError.message : 'CSV atom creation failed.');
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
+  return (
+    <div className="border border-line/80 bg-white/70 p-6 shadow-sheet">
+      <div className="space-y-6">
+        <div className="space-y-3">
+          <p className="text-[0.72rem] uppercase tracking-terminal text-muted">CSV atom import</p>
+          <h3 className="font-serif text-[2rem] leading-none tracking-[-0.045em] text-ink">
+            Import atoms from a spreadsheet.
+          </h3>
+          <p className="max-w-3xl text-sm leading-7 text-muted">
+            Start with a simple `name` column, then add optional fields like `description`, `url`, `image_url`,
+            `deposit`, or `schema_type` when needed. CSV imports are capped at {MAX_CSV_BATCH_SIZE} atoms per transaction.
+          </p>
+        </div>
+
+        <div className="rounded-[1.05rem] border border-line/80 bg-paper/60 p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-ink bg-ink px-4 py-2 text-sm text-paper transition-colors duration-150 hover:bg-[#3a2a23]">
+              <span aria-hidden="true" className="text-base leading-none">+</span>
+              Upload CSV
+              <input type="file" accept=".csv,text/csv" onChange={(event) => void handleCsvFile(event)} className="hidden" />
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                void handleParseCsvText();
+              }}
+              disabled={busy || !csvText.trim()}
+              className="inline-flex rounded-full border border-line bg-white/75 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isParsing ? 'Parsing CSV...' : 'Preview import'}
+            </button>
+            <button
+              type="button"
+              onClick={resetImport}
+              disabled={busy && !csvText}
+              className="inline-flex rounded-full border border-line bg-paper/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Clear import
+            </button>
+          </div>
+          <textarea
+            value={csvText}
+            onChange={(event) => {
+              setCsvText(event.target.value);
+              clearPreparedState();
+            }}
+            rows={8}
+            placeholder={'name,description,url,image_url,deposit,schema_type\nAcme,Trusted supplier,https://acme.com,,0.001,Thing'}
+            className="mt-4 w-full rounded-xl border border-line/80 bg-white/70 px-4 py-3 font-mono text-sm leading-7 text-ink outline-none transition-colors duration-150 focus:border-ink/20"
+          />
+        </div>
+
+        {atoms.length > 0 ? (
+          <div className="rounded-[1.15rem] border border-dashed border-line bg-paper/60 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-[0.72rem] uppercase tracking-terminal text-muted">CSV preview</p>
+                <p className="mt-1 text-sm leading-6 text-muted">
+                  {atoms.length} atoms ready for validation on {getIntuitionNetwork(network).name}.
+                </p>
+              </div>
+              <span className="rounded-full border border-line bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-terminal text-muted">
+                Scroll to inspect
+              </span>
+            </div>
+            <div className="mt-4 overflow-x-auto">
+              <div className="max-h-[24rem] overflow-y-auto rounded-xl border border-line/70 bg-white/75">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="sticky top-0 bg-paper/95 text-[0.68rem] uppercase tracking-terminal text-muted">
+                    <tr>
+                      <th className="px-4 py-3">Line</th>
+                      <th className="px-4 py-3">Atom</th>
+                      <th className="px-4 py-3">Type</th>
+                      <th className="px-4 py-3">Deposit</th>
+                      <th className="px-4 py-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line/70">
+                    {atoms.map((atom) => {
+                      const atomErrors = rowErrors[atom.id] ?? [];
+                      return (
+                        <tr key={atom.id}>
+                          <td className="px-4 py-3 text-muted">{atom.csvLineNumber}</td>
+                          <td className="px-4 py-3 text-ink">
+                            {getAtomDisplayName(atom) || 'Untitled atom'}
+                          </td>
+                          <td className="px-4 py-3 text-muted">{atom.schemaType}</td>
+                          <td className="px-4 py-3 text-muted">{atom.support.trim() || '0'}</td>
+                          <td className="px-4 py-3">
+                            {atomErrors.length > 0 ? (
+                              <span className="text-[#8a4b38]">{atomErrors[0]}</span>
+                            ) : (
+                              <span className="text-muted">Ready</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {importErrors.length > 0 ? (
+          <div className="rounded-xl border border-[#d8b7a9] bg-[#fff8f4] p-4">
+            {importErrors.map((importError) => (
+              <p key={importError} className="text-sm leading-6 text-[#8a4b38]">
+                {importError}
+              </p>
+            ))}
+          </div>
+        ) : null}
+
+        {preparedAtoms ? (
+          <div className="rounded-[1.15rem] border border-dashed border-line bg-paper/60 p-4">
+            <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Import review</p>
+            <div className="mt-4 space-y-3">
+              {preparedAtoms.map((atom, index) => (
+                <div key={atom.rowId} className="rounded-xl border border-line/70 bg-white/75 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm text-ink">
+                        {index + 1}. {atom.displayName}
+                      </p>
+                      <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-muted">{atom.schemaType}</p>
+                    </div>
+                    <p className="text-sm text-muted">
+                      {formatTokenAmount(atom.asset, networkConfig.nativeSymbol)}
+                    </p>
+                  </div>
+                  <p className="mt-2 break-all font-mono text-[0.72rem] leading-5 text-muted">{atom.atomId}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              void handlePrepareCsvBatch();
+            }}
+            disabled={busy || atoms.length === 0}
+            className="inline-flex rounded-full border border-line bg-paper/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isPreparing ? 'Validating atoms...' : 'Validate and review'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleCreateCsvBatch();
+            }}
+            disabled={busy || !preparedAtoms || !canWrite}
+            className="inline-flex rounded-full border border-ink px-4 py-2 text-sm text-ink transition-colors duration-150 hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isCreating ? 'Submitting import...' : hasNetworkMismatch ? 'Wrong network' : 'Create CSV batch'}
+          </button>
+        </div>
+
+        {hasNetworkMismatch ? (
+          <p className="text-sm leading-7 text-muted">
+            CSV import is disabled because your wallet is on{' '}
+            {walletNetworkConfig ? walletNetworkConfig.name : `chain ${walletState.chainId}`} while this page is set to{' '}
+            {networkConfig.name}.
+          </p>
+        ) : !canWrite ? (
+          <p className="text-sm leading-7 text-muted">
+            Wallet writes stay disabled until the connected wallet is on {networkConfig.name}.
+          </p>
+        ) : null}
+
+        {status ? <p className="text-sm leading-7 text-muted">{status}</p> : null}
+        {error ? <p className="text-sm leading-7 text-[#8a4b38]">{error}</p> : null}
+        {result ? (
+          <div className="rounded-[1.15rem] border border-line/80 bg-paper/70 p-5">
+            <p className="text-[0.72rem] uppercase tracking-terminal text-muted">CSV batch confirmed</p>
+            <p className="mt-2 text-sm leading-7 text-muted">{result.atomIds.length} atoms confirmed onchain.</p>
+            <a
+              href={getExplorerTxUrl(network, result.txHash)}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex break-all font-mono text-[0.78rem] leading-6 text-ink underline decoration-line underline-offset-4"
+            >
+              {result.txHash}
+            </a>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ListSearchField({
+  label,
+  network,
+  selected,
+  exact,
+  placeholder,
+  disabled,
+  lockedNote,
+  preferredCreatorAddress,
+  createLabel,
+  onSelect,
+  onExactChange,
+  onRequestCreate,
+  onClear,
+}: {
+  label: string;
+  network: PublicIntuitionNetwork;
+  selected: IntuitionAtomSearchResult | null;
+  exact: boolean;
+  placeholder: string;
+  disabled?: boolean | undefined;
+  lockedNote?: string | undefined;
+  preferredCreatorAddress?: string | null | undefined;
+  createLabel?: string | undefined;
+  onSelect: (atom: IntuitionAtomSearchResult) => void;
+  onExactChange: (value: boolean) => void;
+  onRequestCreate?: ((seed: string) => void) | undefined;
+  onClear: () => void;
+}) {
+  const [query, setQuery] = useState(selected?.label ?? '');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<IntuitionAtomSearchResult[]>([]);
+
+  useEffect(() => {
+    setQuery(selected?.label ?? '');
+  }, [selected]);
+
+  useEffect(() => {
+    if (disabled) {
+      setResults([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    const normalizedQuery = query.trim();
+
+    if (selected && normalizedQuery === selected.label) {
+      setResults([]);
+      return;
+    }
+
+    if (normalizedQuery.length < 2) {
+      setResults([]);
+      setError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const searchedResults = await searchAtoms(
+          network,
+          normalizedQuery,
+          exact,
+          8,
+          preferredCreatorAddress,
+          controller.signal,
+        );
+        setResults(searchedResults);
+      } catch (caughtError) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setResults([]);
+        setError(caughtError instanceof Error ? caughtError.message : 'Atom search failed.');
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    }, 220);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [disabled, exact, network, preferredCreatorAddress, query, selected]);
+
+  return (
+    <div className="space-y-3 rounded-[1.15rem] border border-line/80 bg-white/60 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[0.72rem] uppercase tracking-terminal text-muted">{label}</p>
+          {lockedNote ? <p className="mt-1 text-sm leading-6 text-muted">{lockedNote}</p> : null}
+          <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-muted">
+            {getNetworkSearchLabel(network)}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {onRequestCreate ? (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onRequestCreate(query.trim())}
+              className="inline-flex rounded-full border border-line bg-white/75 px-3 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Create atom
+            </button>
+          ) : null}
+          <label className="inline-flex items-center gap-2 text-xs uppercase tracking-terminal text-muted">
+            <input
+              type="checkbox"
+              checked={exact}
+              disabled={disabled}
+              onChange={(event) => onExactChange(event.target.checked)}
+              className="h-4 w-4 rounded border-line text-ink focus:ring-0"
+            />
+            Exact match
+          </label>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <input
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            if (selected) {
+              onClear();
+            }
+          }}
+          disabled={disabled}
+          placeholder={placeholder}
+          className="w-full rounded-xl border border-line/80 bg-paper/70 px-4 py-3 text-sm text-ink outline-none transition-colors duration-150 placeholder:text-muted focus:border-ink/20"
+        />
+
+        {selected ? (
+          <div className="rounded-xl border border-ink/10 bg-paper/75 p-4">
+            <div className="flex gap-4">
+              {selected.image ? (
+                <img
+                  src={selected.image}
+                  alt={selected.label}
+                  className="h-14 w-14 rounded-[0.85rem] border border-line/80 object-cover"
+                />
+              ) : (
+                <div className="h-14 w-14 rounded-[0.85rem] border border-dashed border-line/80 bg-white/70" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm text-ink">{selected.label}</p>
+                  <span className="rounded-full border border-line bg-white/80 px-2 py-1 text-[0.68rem] uppercase tracking-terminal text-muted">
+                    {selected.type}
+                  </span>
+                  {matchesCreatorAddress(selected, preferredCreatorAddress) ? (
+                    <span className="text-[0.68rem] uppercase tracking-terminal text-[#1f8a62]">Your atom</span>
+                  ) : null}
+                </div>
+                {selected.description ? (
+                  <p className="mt-2 text-sm leading-6 text-muted">{selected.description}</p>
+                ) : (
+                  <p className="mt-2 text-sm leading-6 text-muted">No description attached.</p>
+                )}
+                <p className="mt-2 break-all font-mono text-[0.72rem] leading-5 text-muted">{selected.termId}</p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {!disabled && loading ? <p className="text-sm text-muted">{getNetworkSearchLabel(network)}...</p> : null}
+        {!disabled && error ? <p className="text-sm text-[#8a4b38]">{error}</p> : null}
+
+        {!disabled && results.length > 0 ? (
+          <div className="space-y-2">
+            {results.map((result) => (
+              <button
+                type="button"
+                key={result.termId}
+                onClick={() => {
+                  onSelect(result);
+                  setResults([]);
+                  setQuery(result.label);
+                }}
+                className="flex w-full items-start gap-3 rounded-xl border border-line/70 bg-paper/65 px-4 py-3 text-left transition-colors duration-150 hover:border-ink/15 hover:bg-white/80"
+              >
+                {result.image ? (
+                  <img
+                    src={result.image}
+                    alt={result.label}
+                    className="mt-0.5 h-12 w-12 rounded-[0.85rem] border border-line/80 object-cover"
+                  />
+                ) : (
+                  <div className="mt-0.5 h-12 w-12 rounded-[0.85rem] border border-dashed border-line/80 bg-white/70" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm text-ink">{result.label}</p>
+                    <span className="rounded-full border border-line bg-white/80 px-2 py-1 text-[0.68rem] uppercase tracking-terminal text-muted">
+                      {result.type}
+                    </span>
+                    {matchesCreatorAddress(result, preferredCreatorAddress) ? (
+                      <span className="text-[0.68rem] uppercase tracking-terminal text-[#1f8a62]">Your atom</span>
+                    ) : null}
+                  </div>
+                  {result.description ? (
+                    <p className="mt-1 text-sm leading-6 text-muted">{result.description}</p>
+                  ) : (
+                    <p className="mt-1 text-sm leading-6 text-muted">No description attached.</p>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {!disabled && !loading && query.trim().length >= 2 && results.length === 0 && !selected ? (
+          <div className="rounded-xl border border-dashed border-line bg-paper/70 p-4">
+            <p className="text-sm leading-6 text-muted">
+              No atom matched this {exact ? 'exact' : 'broad'} search on {getIntuitionNetwork(network).name} yet.
+            </p>
+            {onRequestCreate ? (
+              <button
+                type="button"
+                onClick={() => onRequestCreate(query.trim())}
+                className="mt-3 inline-flex rounded-full border border-ink px-3 py-2 text-sm text-ink transition-colors duration-150 hover:bg-ink hover:text-paper"
+              >
+                Create "{query.trim()}" as the {createLabel ?? 'atom'}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ListBatchMemberEditor({
+  index,
+  network,
+  preferredCreatorAddress,
+  row,
+  disabled,
+  onSelect,
+  onExactChange,
+  onRequestCreate,
+  onRemove,
+}: {
+  index: number;
+  network: PublicIntuitionNetwork;
+  preferredCreatorAddress?: string | null;
+  row: ListBatchMemberRow;
+  disabled?: boolean;
+  onSelect: (atom: IntuitionAtomSearchResult | null) => void;
+  onExactChange: (value: boolean) => void;
+  onRequestCreate: (seed: string, rowId: string) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="space-y-3 rounded-[1.15rem] border border-line/80 bg-paper/60 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-[0.72rem] uppercase tracking-terminal text-muted">List member {index + 1}</p>
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={disabled}
+          className="inline-flex rounded-full border border-line bg-white/75 px-3 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Remove
+        </button>
+      </div>
+
+      <ListSearchField
+        label="Member atom"
+        network={network}
+        selected={row.member}
+        exact={row.exact}
+        disabled={disabled}
+        preferredCreatorAddress={preferredCreatorAddress}
+        placeholder="Search for the atom to add..."
+        lockedNote="Search for the atom you want to add to this list."
+        onRequestCreate={(seed) => onRequestCreate(seed, row.id)}
+        onSelect={onSelect}
+        onExactChange={onExactChange}
+        onClear={() => onSelect(null)}
+      />
+    </div>
+  );
+}
+
+function ListCreatorPanel({
+  network,
+  walletState,
+  walletClient,
+  publicClient,
+  tripleCost,
+}: {
+  network: PublicIntuitionNetwork;
+  walletState: WalletState;
+  walletClient?: WalletClient | null;
+  publicClient: ReturnType<typeof createPublicClient>;
+  tripleCost: bigint | null;
+}) {
+  const networkConfig = getIntuitionNetwork(network);
+  const canWrite = walletState.status === 'connected' && walletState.chainId === networkConfig.chainId;
+  const walletNetworkConfig = getIntuitionNetworkByChainId(walletState.chainId);
+  const hasNetworkMismatch =
+    walletState.status === 'connected' &&
+    walletState.chainId !== null &&
+    walletState.chainId !== networkConfig.chainId;
+
+  const [entryMode, setEntryMode] = useState<ListEntryMode>('single');
+  const [listAtom, setListAtom] = useState<IntuitionAtomSearchResult | null>(null);
+  const [listExact, setListExact] = useState(true);
+  const [singleMember, setSingleMember] = useState<IntuitionAtomSearchResult | null>(null);
+  const [singleExact, setSingleExact] = useState(true);
+  const [batchRows, setBatchRows] = useState<ListBatchMemberRow[]>([createListBatchMemberRow()]);
+  const [csvText, setCsvText] = useState('');
+  const [csvRows, setCsvRows] = useState<ListCsvImportRow[]>([]);
+  const [csvErrors, setCsvErrors] = useState<string[]>([]);
+  const [csvStatus, setCsvStatus] = useState<string | null>(null);
+  const [isResolvingCsv, setIsResolvingCsv] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    txHash?: Hash;
+    createdCount: number;
+    existingCount: number;
+    listLabel: string;
+    listTermId: Hash;
+  } | null>(null);
+  const [modalState, setModalState] = useState<ListAtomModalState | null>(null);
+
+  const inlineInitialForm = useMemo(
+    () => (modalState ? getDefaultInlineForm(modalState.seed) : undefined),
+    [modalState],
+  );
+
+  function clearActionState() {
+    setStatus(null);
+    setError(null);
+    setResult(null);
+  }
+
+  function getResolvedBatchMembers() {
+    return batchRows.flatMap((row) => (row.member ? [row.member] : []));
+  }
+
+  function getResolvedCsvMembers() {
+    return csvRows.flatMap((row) => (row.status === 'resolved' && row.selected ? [row.selected] : []));
+  }
+
+  async function submitListEntries(members: IntuitionAtomSearchResult[]) {
+    setIsSubmitting(true);
+    clearActionState();
+    setCsvStatus(null);
+
+    try {
+      if (!canWrite || !walletState.address) {
+        throw new Error('Connect a wallet on the active Intuition network before adding to a list.');
+      }
+
+      if (!walletClient) {
+        throw new Error('No connected wallet client is available.');
+      }
+
+      if (!listAtom) {
+        throw new Error('Resolve the list atom first.');
+      }
+
+      const dedupedMembers = Array.from(new Map(members.map((member) => [member.termId, member])).values());
+
+      if (dedupedMembers.length === 0) {
+        throw new Error('Resolve at least one member atom before adding to the list.');
+      }
+
+      if (dedupedMembers.length > MAX_LIST_BATCH_SIZE) {
+        throw new Error(`List creation is limited to ${MAX_LIST_BATCH_SIZE} members per transaction.`);
+      }
+
+      setStatus('Checking the list atom, member atoms, and the canonical has tag predicate on-chain...');
+
+      const termIdsToCheck = [listAtom.termId, HAS_TAG_PREDICATE_TERM_ID, ...dedupedMembers.map((member) => member.termId)];
+      const existenceChecks = (await Promise.all(
+        termIdsToCheck.map((termId) =>
+          publicClient.readContract({
+            address: networkConfig.multiVault,
+            abi: MULTIVAULT_ABI,
+            functionName: 'isTermCreated',
+            args: [termId],
+          }),
+        ),
+      )) as boolean[];
+
+      if (existenceChecks.some((exists) => !exists)) {
+        throw new Error('At least one required atom is not confirmed on-chain yet. Create missing atoms first.');
+      }
+
+      setStatus('Computing the list entries that already exist so only missing ones are sent...');
+
+      const tripleIds = (await Promise.all(
+        dedupedMembers.map((member) =>
+          publicClient.readContract({
+            address: networkConfig.multiVault,
+            abi: MULTIVAULT_ABI,
+            functionName: 'calculateTripleId',
+            args: [member.termId, HAS_TAG_PREDICATE_TERM_ID, listAtom.termId],
+          }),
+        ),
+      )) as Hash[];
+
+      const tripleExists = (await Promise.all(
+        tripleIds.map((tripleId) =>
+          publicClient.readContract({
+            address: networkConfig.multiVault,
+            abi: MULTIVAULT_ABI,
+            functionName: 'isTermCreated',
+            args: [tripleId],
+          }),
+        ),
+      )) as boolean[];
+
+      const membersToCreate = dedupedMembers.filter((_, index) => !tripleExists[index]);
+      const existingCount = tripleExists.filter(Boolean).length;
+
+      if (membersToCreate.length === 0) {
+        setResult({
+          createdCount: 0,
+          existingCount,
+          listLabel: listAtom.label,
+          listTermId: listAtom.termId,
+        });
+        setStatus('Those atoms are already in this list on the active network, so no write was sent.');
+        return;
+      }
+
+      const resolvedTripleCost =
+        tripleCost ??
+        ((await publicClient.readContract({
+          address: networkConfig.multiVault,
+          abi: MULTIVAULT_ABI,
+          functionName: 'getTripleCost',
+        })) as bigint);
+
+      const assets = Array.from({ length: membersToCreate.length }, () => resolvedTripleCost);
+      const predicateIds = Array.from({ length: membersToCreate.length }, () => HAS_TAG_PREDICATE_TERM_ID);
+      const objectIds = Array.from({ length: membersToCreate.length }, () => listAtom.termId);
+      const totalValue = resolvedTripleCost * BigInt(membersToCreate.length);
+
+      setStatus('Waiting for wallet approval to add the missing atoms to this list...');
+
+      const data = encodeFunctionData({
+        abi: MULTIVAULT_ABI,
+        functionName: 'createTriples',
+        args: [membersToCreate.map((member) => member.termId), predicateIds, objectIds, assets],
+      });
+
+      const txHash = await walletClient.sendTransaction({
+        account: walletState.address as `0x${string}`,
+        chain: INTUITION_CHAINS[network],
+        to: networkConfig.multiVault,
+        data,
+        value: totalValue,
+      });
+
+      setStatus('Confirming the list entry transaction on-chain...');
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      setResult({
+        txHash,
+        createdCount: membersToCreate.length,
+        existingCount,
+        listLabel: listAtom.label,
+        listTermId: listAtom.termId,
+      });
+      setStatus('List entries confirmed on-chain.');
+    } catch (caughtError) {
+      setStatus(null);
+      setError(caughtError instanceof Error ? caughtError.message : 'List creation failed.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleResolveCsv() {
+    setIsResolvingCsv(true);
+    setCsvStatus('Validating CSV rows and resolving member atoms against the graph...');
+    setCsvErrors([]);
+    clearActionState();
+
+    try {
+      const { rows, errors: parsingErrors } = parseListCsvFile(csvText);
+      const cappedRows = rows.slice(0, MAX_LIST_BATCH_SIZE);
+
+      const resolvedRows: ListCsvImportRow[] = await Promise.all(
+        cappedRows.map(async (row) => {
+          const results = await searchAtoms(network, row.memberName, true, 8, walletState.address);
+          const normalizedName = normalizeSearchText(row.memberName);
+          const exactMatches = results.filter((candidate) => normalizeSearchText(candidate.label) === normalizedName);
+          const walletPreferredMatches = exactMatches.filter((candidate) =>
+            matchesCreatorAddress(candidate, walletState.address),
+          );
+
+          if (walletPreferredMatches.length === 1) {
+            return {
+              id: `${row.lineNumber}-${normalizedName}`,
+              lineNumber: row.lineNumber,
+              memberName: row.memberName,
+              selected: walletPreferredMatches[0] ?? null,
+              candidates: exactMatches,
+              status: 'resolved' as const,
+              note: 'Exact match found and your own atom was preferred.',
+            };
+          }
+
+          if (exactMatches.length === 1) {
+            return {
+              id: `${row.lineNumber}-${normalizedName}`,
+              lineNumber: row.lineNumber,
+              memberName: row.memberName,
+              selected: exactMatches[0] ?? null,
+              candidates: exactMatches,
+              status: 'resolved' as const,
+              note: 'Exact match found.',
+            };
+          }
+
+          if (exactMatches.length > 1) {
+            return {
+              id: `${row.lineNumber}-${normalizedName}`,
+              lineNumber: row.lineNumber,
+              memberName: row.memberName,
+              selected: null,
+              candidates: exactMatches,
+              status: 'ambiguous' as const,
+              note: 'Multiple exact matches exist. Pick the right atom before submitting.',
+            };
+          }
+
+          return {
+            id: `${row.lineNumber}-${normalizedName}`,
+            lineNumber: row.lineNumber,
+            memberName: row.memberName,
+            selected: null,
+            candidates: [],
+            status: 'missing' as const,
+            note: 'No exact atom matched this member name on the active network.',
+          };
+        }),
+      );
+
+      const resolvedCount = resolvedRows.filter((row) => row.status === 'resolved').length;
+      const unresolvedCount = resolvedRows.length - resolvedCount;
+
+      setCsvRows(resolvedRows);
+      setCsvErrors(parsingErrors);
+      setCsvStatus(
+        unresolvedCount === 0
+          ? `${resolvedCount} members resolved and ready for list creation.`
+          : `${resolvedCount} members resolved. ${unresolvedCount} still need review.`,
+      );
+    } catch (caughtError) {
+      setCsvRows([]);
+      setCsvStatus(null);
+      setCsvErrors([caughtError instanceof Error ? caughtError.message : 'CSV import failed.']);
+    } finally {
+      setIsResolvingCsv(false);
+    }
+  }
+
+  const unresolvedCsvCount = csvRows.filter((row) => row.status !== 'resolved').length;
+
+  return (
+    <div className="space-y-8">
+      <div className="space-y-4">
+        <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Lists</p>
+        <h2 className="font-serif text-[2.3rem] leading-none tracking-[-0.045em] text-ink sm:text-[2.7rem]">
+          Add atoms to a list.
+        </h2>
+        <p className="max-w-3xl text-sm leading-7 text-muted">
+          Pick or create the list name first, then add one atom, several atoms, or a CSV of member names. Under the
+          hood, each entry becomes the usual Intuition claim structure with the canonical has tag predicate.
+        </p>
+      </div>
+
+      <ListSearchField
+        label="List atom"
+        network={network}
+        selected={listAtom}
+        exact={listExact}
+        preferredCreatorAddress={walletState.address}
+        placeholder="Search for the list name..."
+        lockedNote="This is the list name atom. If it does not exist yet, create it here first."
+        createLabel="list"
+        onSelect={(atom) => {
+          setListAtom(atom);
+          clearActionState();
+        }}
+        onExactChange={setListExact}
+        onRequestCreate={(seed) => {
+          setInlineTarget('list');
+          setInlineSeed(seed);
+        }}
+        onClear={() => {
+          setListAtom(null);
+          clearActionState();
+        }}
+      />
+
+      {inlineTarget ? (
+        <AtomCreatorPanel
+          key={`${inlineTarget}-${inlineSeed}`}
+          network={network}
+          walletState={walletState}
+          walletClient={walletClient ?? null}
+          publicClient={publicClient}
+          title={inlineTarget === 'list' ? 'Create the list atom' : 'Create the member atom'}
+          body={
+            inlineTarget === 'list'
+              ? 'Create the list name now, then return straight to adding members.'
+              : 'Create the missing member atom here, then drop it straight back into the list.'
+          }
+          initialForm={inlineInitialForm}
+          compact
+          onResolved={(atom) => {
+            if (inlineTarget === 'list') {
+              setListAtom(atom);
+            } else {
+              setSingleMember(atom);
+            }
+            setInlineTarget(null);
+            setInlineSeed('');
+          }}
+        />
+      ) : null}
+
+      <div className="inline-flex rounded-full border border-line bg-paper/75 p-1">
+        {(['single', 'batch', 'csv'] as ListEntryMode[]).map((mode) => (
+          <button
+            type="button"
+            key={mode}
+            onClick={() => {
+              setEntryMode(mode);
+              clearActionState();
+            }}
+            className={`rounded-full px-4 py-2 text-sm transition-colors duration-150 ${
+              entryMode === mode ? 'bg-ink text-paper' : 'text-muted hover:text-ink'
+            }`}
+          >
+            {mode === 'single' ? 'Single entry' : mode === 'batch' ? 'Batch entries' : 'CSV import'}
+          </button>
+        ))}
+      </div>
+
+      {entryMode === 'single' ? (
+        <div className="space-y-5">
+          <ListSearchField
+            label="Member atom"
+            network={network}
+            selected={singleMember}
+            exact={singleExact}
+            preferredCreatorAddress={walletState.address}
+            placeholder="Search for the atom to add..."
+            lockedNote="Choose the atom you want to add to the list."
+            createLabel="member"
+            onSelect={(atom) => {
+              setSingleMember(atom);
+              clearActionState();
+            }}
+            onExactChange={setSingleExact}
+            onRequestCreate={(seed) => {
+              setInlineTarget('member');
+              setInlineSeed(seed);
+            }}
+            onClear={() => {
+              setSingleMember(null);
+              clearActionState();
+            }}
+          />
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                void submitListEntries(singleMember ? [singleMember] : []);
+              }}
+              disabled={isSubmitting || !canWrite || !listAtom || !singleMember}
+              className="inline-flex rounded-full border border-ink px-4 py-2 text-sm text-ink transition-colors duration-150 hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSubmitting ? 'Adding to list...' : hasNetworkMismatch ? 'Wrong network' : 'Add to list'}
+            </button>
+            <p className="text-sm leading-7 text-muted">Resolve the list name and one member atom, then publish.</p>
+          </div>
+        </div>
+      ) : entryMode === 'batch' ? (
+        <div className="space-y-5">
+          <div className="space-y-4">
+            {batchRows.map((row, index) => (
+              <ListBatchMemberEditor
+                key={row.id}
+                index={index}
+                network={network}
+                preferredCreatorAddress={walletState.address}
+                row={row}
+                disabled={isSubmitting}
+                onSelect={(atom) => {
+                  setBatchRows((current) =>
+                    current.map((entry) => (entry.id === row.id ? { ...entry, member: atom } : entry)),
+                  );
+                  clearActionState();
+                }}
+                onExactChange={(value) => {
+                  setBatchRows((current) =>
+                    current.map((entry) => (entry.id === row.id ? { ...entry, exact: value } : entry)),
+                  );
+                  clearActionState();
+                }}
+                onRemove={() => {
+                  setBatchRows((current) =>
+                    current.length > 1 ? current.filter((entry) => entry.id !== row.id) : [createListBatchMemberRow()],
+                  );
+                  clearActionState();
+                }}
+              />
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setBatchRows((current) => [...current, createListBatchMemberRow()])}
+            disabled={isSubmitting || batchRows.length >= MAX_LIST_BATCH_SIZE}
+            className="inline-flex rounded-full border border-ink bg-ink px-4 py-2 text-sm text-paper transition-colors duration-150 hover:bg-[#3a2a23] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            + Add atom
+          </button>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                void submitListEntries(getResolvedBatchMembers());
+              }}
+              disabled={isSubmitting || !canWrite || !listAtom || getResolvedBatchMembers().length === 0}
+              className="inline-flex rounded-full border border-ink px-4 py-2 text-sm text-ink transition-colors duration-150 hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSubmitting ? 'Adding to list...' : hasNetworkMismatch ? 'Wrong network' : 'Add atoms to list'}
+            </button>
+            <p className="text-sm leading-7 text-muted">
+              Batch entries that already exist are skipped automatically before the transaction is built.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-5 rounded-[1.15rem] border border-line/80 bg-paper/60 p-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-ink bg-ink px-4 py-2 text-sm text-paper transition-colors duration-150 hover:bg-[#3a2a23]">
+              <span aria-hidden="true" className="text-base leading-none">+</span>
+              Upload CSV
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) {
+                    return;
+                  }
+
+                  void file.text().then((text) => {
+                    setCsvText(text);
+                    setCsvRows([]);
+                    setCsvErrors([]);
+                    setCsvStatus(null);
+                    clearActionState();
+                  });
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                void handleResolveCsv();
+              }}
+              disabled={isResolvingCsv || !csvText.trim()}
+              className="inline-flex rounded-full border border-line bg-white/75 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isResolvingCsv ? 'Resolving members...' : 'Preview import'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCsvText('');
+                setCsvRows([]);
+                setCsvErrors([]);
+                setCsvStatus(null);
+                clearActionState();
+              }}
+              className="inline-flex rounded-full border border-line bg-paper/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink"
+            >
+              Clear import
+            </button>
+          </div>
+
+          <textarea
+            value={csvText}
+            onChange={(event) => {
+              setCsvText(event.target.value);
+              setCsvRows([]);
+              setCsvErrors([]);
+              setCsvStatus(null);
+              clearActionState();
+            }}
+            rows={8}
+            placeholder={'name\nEthereum\nBase\nOptimism'}
+            className="w-full rounded-xl border border-line/80 bg-white/70 px-4 py-3 font-mono text-sm leading-7 text-ink outline-none transition-colors duration-150 focus:border-ink/20"
+          />
+
+          {csvStatus ? <p className="text-sm leading-7 text-muted">{csvStatus}</p> : null}
+          {csvErrors.length > 0 ? (
+            <div className="rounded-xl border border-[#d8a68e] bg-[#fff5f0] p-4 text-sm leading-7 text-[#8a4b38]">
+              {csvErrors.map((entry) => (
+                <p key={entry}>{entry}</p>
+              ))}
+            </div>
+          ) : null}
+
+          {csvRows.length > 0 ? (
+            <div className="space-y-4">
+              <div className="rounded-[1.05rem] border border-line/80 bg-white/75 p-4">
+                <p className="text-[0.72rem] uppercase tracking-terminal text-muted">CSV review</p>
+                <p className="mt-2 text-sm leading-7 text-muted">
+                  {csvRows.filter((row) => row.status === 'resolved').length} resolved, {unresolvedCsvCount} still need
+                  review.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {csvRows.map((row) => (
+                  <div key={row.id} className="rounded-[1.05rem] border border-line/80 bg-white/75 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Line {row.lineNumber}</p>
+                        <p className="mt-1 text-sm text-ink">{row.memberName}</p>
+                      </div>
+                      <span className="rounded-full border border-line bg-paper/80 px-3 py-1 text-[0.68rem] uppercase tracking-terminal text-muted">
+                        {row.status}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm leading-6 text-muted">{row.note}</p>
+
+                    {row.status === 'resolved' && row.selected ? (
+                      <div className="mt-3 rounded-xl border border-ink/10 bg-paper/70 p-4">
+                        <div className="flex gap-3">
+                          {row.selected.image ? (
+                            <img
+                              src={row.selected.image}
+                              alt={row.selected.label}
+                              className="h-11 w-11 rounded-[0.8rem] border border-line/80 object-cover"
+                            />
+                          ) : (
+                            <div className="h-11 w-11 rounded-[0.8rem] border border-dashed border-line/80 bg-white/70" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-ink">{row.selected.label}</p>
+                            <p className="mt-1 break-all font-mono text-[0.72rem] leading-5 text-muted">
+                              {row.selected.termId}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {row.status === 'ambiguous' && row.candidates.length > 0 ? (
+                      <div className="mt-3 space-y-2">
+                        {row.candidates.slice(0, 4).map((candidate) => (
+                          <button
+                            type="button"
+                            key={`${row.id}-${candidate.termId}`}
+                            onClick={() => {
+                              setCsvRows((current) =>
+                                current.map((entry) =>
+                                  entry.id === row.id
+                                    ? {
+                                        ...entry,
+                                        selected: candidate,
+                                        status: 'resolved',
+                                        note: 'Exact match reviewed and selected manually.',
+                                      }
+                                    : entry,
+                                ),
+                              );
+                              clearActionState();
+                            }}
+                            className="flex w-full items-start gap-3 rounded-xl border border-line/70 bg-paper/65 px-4 py-3 text-left transition-colors duration-150 hover:border-ink/15 hover:bg-white/80"
+                          >
+                            {candidate.image ? (
+                              <img
+                                src={candidate.image}
+                                alt={candidate.label}
+                                className="mt-0.5 h-11 w-11 rounded-[0.8rem] border border-line/80 object-cover"
+                              />
+                            ) : (
+                              <div className="mt-0.5 h-11 w-11 rounded-[0.8rem] border border-dashed border-line/80 bg-white/70" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm text-ink">{candidate.label}</p>
+                                {matchesCreatorAddress(candidate, walletState.address) ? (
+                                  <span className="text-[0.68rem] uppercase tracking-terminal text-[#1f8a62]">
+                                    Your atom
+                                  </span>
+                                ) : null}
+                              </div>
+                              {candidate.description ? (
+                                <p className="mt-1 text-sm leading-6 text-muted">{candidate.description}</p>
+                              ) : null}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                void submitListEntries(getResolvedCsvMembers());
+              }}
+              disabled={isSubmitting || !canWrite || !listAtom || csvRows.length === 0 || unresolvedCsvCount > 0}
+              className="inline-flex rounded-full border border-ink px-4 py-2 text-sm text-ink transition-colors duration-150 hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSubmitting ? 'Adding to list...' : hasNetworkMismatch ? 'Wrong network' : 'Add resolved atoms to list'}
+            </button>
+            <p className="text-sm leading-7 text-muted">
+              Unresolved CSV rows must be reviewed first so the app does not guess the wrong atom.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {hasNetworkMismatch ? (
+        <p className="text-sm leading-7 text-muted">
+          List creation is disabled because your wallet is on{' '}
+          {walletNetworkConfig ? walletNetworkConfig.name : `chain ${walletState.chainId}`} while this page is set to{' '}
+          {networkConfig.name}.
+        </p>
+      ) : !canWrite ? (
+        <p className="text-sm leading-7 text-muted">
+          List creation stays disabled until the wallet is connected on {networkConfig.name}.
+        </p>
+      ) : null}
+
+      {status ? <p className="text-sm leading-7 text-muted">{status}</p> : null}
+      {error ? <p className="text-sm leading-7 text-[#8a4b38]">{error}</p> : null}
+      {result ? (
+        <div className="rounded-[1.15rem] border border-line/80 bg-paper/70 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[0.72rem] uppercase tracking-terminal text-muted">List result</p>
+              <p className="mt-2 font-serif text-[1.5rem] leading-none tracking-[-0.04em] text-ink">
+                {result.createdCount > 0 ? 'List updated' : 'No new entries needed'}
+              </p>
+            </div>
+            <span className="rounded-full border border-ink/10 bg-white/70 px-3 py-1 text-[0.72rem] uppercase tracking-terminal text-muted">
+              {result.createdCount} new
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 text-sm text-muted">
+            <div>
+              <p className="text-[0.68rem] uppercase tracking-terminal text-muted">List atom</p>
+              <p className="mt-1 text-ink">{result.listLabel}</p>
+              <p className="mt-1 break-all font-mono text-[0.78rem] leading-6 text-ink">{result.listTermId}</p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Created now</p>
+                <p className="mt-1 text-ink">{result.createdCount}</p>
+              </div>
+              <div>
+                <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Already there</p>
+                <p className="mt-1 text-ink">{result.existingCount}</p>
+              </div>
+            </div>
+            {result.txHash ? (
+              <div>
+                <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Transaction</p>
+                <a
+                  href={getExplorerTxUrl(network, result.txHash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-flex break-all font-mono text-[0.78rem] leading-6 text-ink underline decoration-line underline-offset-4"
+                >
+                  {result.txHash}
+                </a>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function CreateWorkbench() {
   const { address, isConnected, status: accountStatus } = useAccount();
   const chainId = useChainId();
   const { data: walletClient } = useWalletClient();
   const { openConnectModal } = useConnectModal();
   const { openAccountModal } = useAccountModal();
-  const { switchChainAsync } = useSwitchChain();
   const [network, setNetwork] = useState<PublicIntuitionNetwork>('testnet');
   const [activeTab, setActiveTab] = useState<CreateWorkbenchTab>('atom');
   const [atomCreationMode, setAtomCreationMode] = useState<AtomCreationMode>('single');
-  const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
   const [walletUiError, setWalletUiError] = useState<string | null>(null);
   const [claimSelections, setClaimSelections] = useState<Record<ClaimFieldKey, IntuitionAtomSearchResult | null>>({
     subject: null,
@@ -2424,6 +4243,12 @@ export function CreateWorkbench() {
     }
   }, [accountStatus, address, chainId]);
 
+  useEffect(() => {
+    if (walletNetworkConfig && network !== walletNetworkConfig.key) {
+      setNetwork(walletNetworkConfig.key);
+    }
+  }, [network, walletNetworkConfig]);
+
   function setSelection(field: ClaimFieldKey, atom: IntuitionAtomSearchResult | null) {
     setClaimSelections((current) => ({
       ...current,
@@ -2442,34 +4267,6 @@ export function CreateWorkbench() {
       return;
     }
     openConnectModal();
-  }
-
-  async function handleNetworkSelection(targetNetwork: PublicIntuitionNetwork) {
-    setNetwork(targetNetwork);
-    setWalletUiError(null);
-
-    if (wallet.status !== 'connected') {
-      return;
-    }
-
-    if (wallet.chainId === getIntuitionNetwork(targetNetwork).chainId) {
-      return;
-    }
-
-    if (!switchChainAsync) {
-      setWalletUiError('Wallet network switching is unavailable for this connector.');
-      return;
-    }
-
-    setIsSwitchingNetwork(true);
-
-    try {
-      await switchChainAsync({ chainId: getIntuitionNetwork(targetNetwork).chainId });
-    } catch (caughtError) {
-      setWalletUiError(caughtError instanceof Error ? caughtError.message : 'Network switch failed.');
-    } finally {
-      setIsSwitchingNetwork(false);
-    }
   }
 
   async function handleClaimCreate() {
@@ -2583,46 +4380,20 @@ export function CreateWorkbench() {
   }
 
   return (
-    <div className="space-y-8">
-      <section className="border border-line/80 bg-white/70 p-6 shadow-sheet">
+    <div className="grid gap-8 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
+      <aside className="border border-line/80 bg-white/70 p-6 shadow-sheet xl:sticky xl:top-24">
         <div className="space-y-5">
           <div className="space-y-2">
             <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Session</p>
-            <p className="font-serif text-[2rem] leading-none tracking-[-0.045em] text-ink sm:text-[2.2rem]">
-              Create on Intuition without the raw protocol clutter.
+            <p className="font-serif text-[1.55rem] leading-none tracking-[-0.045em] text-ink sm:text-[1.7rem]">
+              Ready to write on Intuition.
             </p>
-            <p className="max-w-3xl text-sm leading-7 text-muted">
-              Pick a network, connect once, and then move straight into creating atoms or publishing claims.
+            <p className="text-sm leading-7 text-muted">
+              Check the active network, confirm your wallet, and move straight into creation.
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {(['testnet', 'mainnet'] as PublicIntuitionNetwork[]).map((option) => (
-              <button
-                type="button"
-                key={option}
-                onClick={() => {
-                  void handleNetworkSelection(option);
-                }}
-                disabled={isSwitchingNetwork}
-                className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm transition-colors duration-150 ${
-                  network === option
-                    ? 'border-ink/15 bg-paper text-ink'
-                    : 'border-line bg-white/70 text-muted hover:border-ink/15 hover:text-ink'
-                } ${isSwitchingNetwork ? 'cursor-not-allowed opacity-70' : ''}`}
-              >
-                {network === option ? (
-                  <span className="relative flex h-2.5 w-2.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#1f8a62]/35" />
-                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#1f8a62]" />
-                  </span>
-                ) : null}
-                <span>{getIntuitionNetwork(option).name}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1.2fr)_repeat(2,minmax(0,0.6fr))]">
+          <div className="space-y-3">
             <div className="rounded-[1.05rem] border border-line/80 bg-paper/70 p-4">
               <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Wallet</p>
               <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -2637,30 +4408,31 @@ export function CreateWorkbench() {
                   </span>
                 ) : null}
               </div>
-              {wallet.status === 'connected' ? (
-                <p className="mt-2 text-sm leading-6 text-muted">
-                  Wallet network:{' '}
-                  <span className="text-ink">
-                    {walletNetworkConfig ? walletNetworkConfig.name : `Unknown chain (${wallet.chainId})`}
-                  </span>
-                </p>
-              ) : null}
             </div>
+
+            <div className="rounded-[1.05rem] border border-line/80 bg-paper/70 p-4">
+              <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Current network</p>
+              <p className="mt-2 text-sm leading-6 text-ink">
+                {walletNetworkConfig ? walletNetworkConfig.name : networkConfig.name}
+              </p>
+            </div>
+
             <div className="rounded-[1.05rem] border border-line/80 bg-paper/70 p-4">
               <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Atom cost</p>
               <p className="mt-2 text-sm leading-6 text-ink">
-                {costs.atomCost !== null ? `${formatEther(costs.atomCost)} ${networkConfig.nativeSymbol}` : 'Loading...'}
+                {costs.atomCost !== null ? formatTokenAmount(costs.atomCost, networkConfig.nativeSymbol) : 'Loading...'}
               </p>
             </div>
+
             <div className="rounded-[1.05rem] border border-line/80 bg-paper/70 p-4">
               <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Claim cost</p>
               <p className="mt-2 text-sm leading-6 text-ink">
-                {costs.tripleCost !== null ? `${formatEther(costs.tripleCost)} ${networkConfig.nativeSymbol}` : 'Loading...'}
+                {costs.tripleCost !== null ? formatTokenAmount(costs.tripleCost, networkConfig.nativeSymbol) : 'Loading...'}
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="space-y-3">
             {wallet.status === 'connected' ? (
               <button
                 type="button"
@@ -2679,20 +4451,19 @@ export function CreateWorkbench() {
               </button>
             )}
             <p className="text-sm leading-7 text-muted">
-              {isSwitchingNetwork
-                ? `Switching wallet to ${networkConfig.name}...`
-                : wallet.status === 'connected' && wallet.chainId === networkConfig.chainId
-                ? `Ready on ${networkConfig.name}. You can create and publish from here.`
+              {wallet.status === 'connected' && wallet.chainId === networkConfig.chainId
+                ? `Ready on ${networkConfig.name}.`
                 : wallet.status === 'connected'
-                  ? `Wallet is on ${walletNetworkConfig ? walletNetworkConfig.name : `chain ${wallet.chainId}`}. Pick ${networkConfig.name} above to switch and write there.`
-                  : 'You can browse first. Writing unlocks after wallet connection.'}
+                  ? `Wallet is on ${walletNetworkConfig ? walletNetworkConfig.name : `chain ${wallet.chainId}`}. Switch networks from the header if needed.`
+                  : 'Writing unlocks after wallet connection.'}
             </p>
           </div>
 
           {wallet.error ? <p className="text-sm leading-7 text-[#8a4b38]">{wallet.error}</p> : null}
         </div>
-      </section>
+      </aside>
 
+      <div className="space-y-6">
       {activeTab === 'claim' ? (
         <section className="space-y-6">
           <div className="border border-line/80 bg-white/70 p-8 shadow-sheet">
@@ -2751,6 +4522,7 @@ export function CreateWorkbench() {
                   network={network}
                   selected={claimSelections.subject}
                   exact={claimExact.subject}
+                  preferredCreatorAddress={wallet.address}
                   placeholder="Search for the subject..."
                   onSelect={(atom) => setSelection('subject', atom)}
                   onExactChange={(value) => setClaimExact((current) => ({ ...current, subject: value }))}
@@ -2767,6 +4539,7 @@ export function CreateWorkbench() {
                   network={network}
                   selected={claimSelections.predicate}
                   exact={claimExact.predicate}
+                  preferredCreatorAddress={wallet.address}
                   placeholder="Search for the predicate..."
                   onSelect={(atom) => setSelection('predicate', atom)}
                   onExactChange={(value) => setClaimExact((current) => ({ ...current, predicate: value }))}
@@ -2783,6 +4556,7 @@ export function CreateWorkbench() {
                   network={network}
                   selected={claimSelections.object}
                   exact={claimExact.object}
+                  preferredCreatorAddress={wallet.address}
                   placeholder="Search for the object..."
                   onSelect={(atom) => setSelection('object', atom)}
                   onExactChange={(value) => setClaimExact((current) => ({ ...current, object: value }))}
@@ -2954,7 +4728,7 @@ export function CreateWorkbench() {
               </div>
 
               <div className="inline-flex rounded-full border border-line bg-paper/75 p-1">
-                {(['single', 'batch'] as AtomCreationMode[]).map((mode) => (
+                {(['single', 'batch', 'csv'] as AtomCreationMode[]).map((mode) => (
                   <button
                     type="button"
                     key={mode}
@@ -2963,7 +4737,7 @@ export function CreateWorkbench() {
                       atomCreationMode === mode ? 'bg-ink text-paper' : 'text-muted hover:text-ink'
                     }`}
                   >
-                    {mode === 'single' ? 'Single atom' : 'Batch atoms'}
+                    {mode === 'single' ? 'Single atom' : mode === 'batch' ? 'Batch atoms' : 'CSV import'}
                   </button>
                 ))}
               </div>
@@ -2977,8 +4751,15 @@ export function CreateWorkbench() {
                   title="Atom creation"
                   body="Create the building block you need, then bring it straight into a claim."
                 />
-              ) : (
+              ) : atomCreationMode === 'batch' ? (
                 <BatchAtomCreatorPanel
+                  network={network}
+                  walletState={wallet}
+                  walletClient={walletClient ?? null}
+                  publicClient={publicClient}
+                />
+              ) : (
+                <CsvAtomImportPanel
                   network={network}
                   walletState={wallet}
                   walletClient={walletClient ?? null}
@@ -3015,75 +4796,19 @@ export function CreateWorkbench() {
                   ))}
                 </div>
 
-                <div className="space-y-3">
-                  <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Lists</p>
-                  <h2 className="font-serif text-[2.3rem] leading-none tracking-[-0.045em] text-ink sm:text-[2.7rem]">
-                    Group atoms into a list.
-                  </h2>
-                  <p className="max-w-3xl text-sm leading-7 text-muted">
-                    Lists are not direct claims. They are for grouping, tagging, and organizing atoms around one anchor.
-                  </p>
-                </div>
               </div>
-
-              <div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(18rem,0.7fr)]">
-                <div className="rounded-[1.15rem] border border-line/80 bg-paper/70 p-6">
-                  <div className="space-y-5">
-                    <div>
-                      <p className="text-[0.72rem] uppercase tracking-terminal text-muted">How this should work</p>
-                      <p className="mt-3 text-sm leading-7 text-muted">
-                        Pick the anchor atom first, then attach existing atoms as members or tags. That flow deserves its
-                        own builder instead of being hidden inside direct claim creation.
-                      </p>
-                    </div>
-
-                    <div className="divide-y divide-line/70 border-y border-line/70">
-                      {[
-                        'Choose the atom the list belongs to',
-                        'Search and attach the atoms you want grouped under it',
-                        'Review the structure before publishing the list',
-                      ].map((step, index) => (
-                        <div key={step} className="grid gap-3 py-4 sm:grid-cols-[3rem_minmax(0,1fr)] sm:items-start">
-                          <p className="text-sm text-muted">0{index + 1}</p>
-                          <p className="text-sm leading-7 text-ink">{step}</p>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="flex flex-wrap gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('claim')}
-                        className="inline-flex rounded-full border border-line bg-white/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink"
-                      >
-                        Back to claims
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('atom')}
-                        className="inline-flex rounded-full border border-line bg-white/70 px-4 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink"
-                      >
-                        Back to atoms
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-[1.15rem] border border-line/80 bg-paper/70 p-6">
-                  <div className="space-y-4">
-                    <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Status</p>
-                    <p className="font-serif text-[2rem] leading-none tracking-[-0.045em] text-ink">Coming next</p>
-                    <p className="text-sm leading-7 text-muted">
-                      This tab is now the list creation placeholder inside the main creation hub. When the real builder
-                      lands, it should open here instead of living on a separate page.
-                    </p>
-                  </div>
-                </div>
-              </div>
+              <ListCreatorPanel
+                network={network}
+                walletState={wallet}
+                walletClient={walletClient ?? null}
+                publicClient={publicClient}
+                tripleCost={costs.tripleCost}
+              />
             </div>
           </div>
         </section>
       )}
+      </div>
     </div>
   );
 }

@@ -11,6 +11,10 @@ interface GraphAtomCandidate {
   label: string;
   type: string;
   data?: string | null;
+  creator?: {
+    id?: string | null;
+    label?: string | null;
+  } | null;
   value?: {
     thing?: { description?: string | null; image?: string | null; url?: string | null } | null;
     organization?: { description?: string | null; image?: string | null; url?: string | null } | null;
@@ -34,6 +38,10 @@ const CANONICAL_QUERY = `
       label
       type
       data
+      creator {
+        id
+        label
+      }
       value {
         thing { description image url }
         organization { description image url }
@@ -89,6 +97,8 @@ function mapCandidate(candidate: GraphAtomCandidate): IntuitionAtomSearchResult 
     description: value?.description?.trim() ? value.description.trim() : null,
     image: value?.image?.trim() ? value.image.trim() : null,
     url: value?.url?.trim() ? value.url.trim() : null,
+    creatorId: candidate.creator?.id?.trim() ? candidate.creator.id.trim() : null,
+    creatorLabel: candidate.creator?.label?.trim() ? candidate.creator.label.trim() : null,
     positionCount: signal.positionCount,
     totalShares: signal.totalShares.toString(),
   };
