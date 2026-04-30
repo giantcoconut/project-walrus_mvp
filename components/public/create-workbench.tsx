@@ -3715,8 +3715,10 @@ function ListCreatorPanel({
         }}
         onExactChange={setListExact}
         onRequestCreate={(seed) => {
-          setInlineTarget('list');
-          setInlineSeed(seed);
+          setModalState({
+            target: 'list',
+            seed,
+          });
         }}
         onClear={() => {
           setListAtom(null);
@@ -3724,31 +3726,50 @@ function ListCreatorPanel({
         }}
       />
 
-      {inlineTarget ? (
-        <AtomCreatorPanel
-          key={`${inlineTarget}-${inlineSeed}`}
-          network={network}
-          walletState={walletState}
-          walletClient={walletClient ?? null}
-          publicClient={publicClient}
-          title={inlineTarget === 'list' ? 'Create the list atom' : 'Create the member atom'}
-          body={
-            inlineTarget === 'list'
-              ? 'Create the list name now, then return straight to adding members.'
-              : 'Create the missing member atom here, then drop it straight back into the list.'
-          }
-          initialForm={inlineInitialForm}
-          compact
-          onResolved={(atom) => {
-            if (inlineTarget === 'list') {
-              setListAtom(atom);
-            } else {
-              setSingleMember(atom);
-            }
-            setInlineTarget(null);
-            setInlineSeed('');
-          }}
-        />
+      {modalState ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(28,18,12,0.45)] px-4 py-8">
+          <div className="relative max-h-[90vh] w-full max-w-4xl overflow-y-auto border border-line/80 bg-paper p-6 shadow-sheet">
+            <button
+              type="button"
+              onClick={() => setModalState(null)}
+              className="absolute right-4 top-4 inline-flex rounded-full border border-line bg-white/80 px-3 py-2 text-sm text-muted transition-colors duration-150 hover:border-ink/15 hover:text-ink"
+            >
+              Close
+            </button>
+
+            <AtomCreatorPanel
+              key={`${modalState.target}-${modalState.rowId ?? 'single'}-${modalState.seed}`}
+              network={network}
+              walletState={walletState}
+              walletClient={walletClient ?? null}
+              publicClient={publicClient}
+              title={
+                modalState.target === 'list'
+                  ? 'Create the list atom'
+                  : 'Create member atom'
+              }
+              body={
+                modalState.target === 'list'
+                  ? 'Create the list name, then keep adding atoms to it.'
+                  : 'Create the atom you want to add to this list.'
+              }
+              initialForm={inlineInitialForm}
+              compact
+              onResolved={(atom) => {
+                if (modalState.target === 'list') {
+                  setListAtom(atom);
+                } else if (modalState.target === 'single-member') {
+                  setSingleMember(atom);
+                } else if (modalState.target === 'batch-member' && modalState.rowId) {
+                  setBatchRows((current) =>
+                    current.map((entry) => (entry.id === modalState.rowId ? { ...entry, member: atom } : entry)),
+                  );
+                }
+                setModalState(null);
+              }}
+            />
+          </div>
+        </div>
       ) : null}
 
       <div className="inline-flex rounded-full border border-line bg-paper/75 p-1">
@@ -3786,8 +3807,10 @@ function ListCreatorPanel({
             }}
             onExactChange={setSingleExact}
             onRequestCreate={(seed) => {
-              setInlineTarget('member');
-              setInlineSeed(seed);
+              setModalState({
+                target: 'single-member',
+                seed,
+              });
             }}
             onClear={() => {
               setSingleMember(null);
@@ -3831,6 +3854,13 @@ function ListCreatorPanel({
                     current.map((entry) => (entry.id === row.id ? { ...entry, exact: value } : entry)),
                   );
                   clearActionState();
+                }}
+                onRequestCreate={(seed, rowId) => {
+                  setModalState({
+                    target: 'batch-member',
+                    seed,
+                    rowId,
+                  });
                 }}
                 onRemove={() => {
                   setBatchRows((current) =>

@@ -5,12 +5,12 @@ import { usePathname } from 'next/navigation';
 
 import { PublicWalletButton } from '../shared/public-wallet-button';
 
-const NAV_ITEMS = [
-  { href: '/', label: 'Home', note: 'Overview' },
+const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; note?: string }> = [
+  { href: '/', label: 'Home' },
   { href: '/claims', label: 'Claims', note: 'Published graph' },
   { href: '/create', label: 'Create', note: 'Protocol entry' },
   { href: '/learn', label: 'Learn', note: 'Protocol basics' },
-] as const;
+];
 
 export function SiteHeader() {
   const pathname = usePathname();
@@ -51,7 +51,9 @@ export function SiteHeader() {
                 >
                   <div className="flex items-baseline gap-2">
                     <span className="text-sm">{item.label}</span>
-                    <span className="hidden text-[0.72rem] text-muted sm:inline">{item.note}</span>
+                    {item.note ? (
+                      <span className="hidden text-[0.72rem] text-muted sm:inline">{item.note}</span>
+                    ) : null}
                   </div>
                 </Link>
               );
