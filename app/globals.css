@@ -4,6 +4,8 @@
 
 :root {
   color-scheme: light;
+  --font-public-sans: 'Segoe UI', 'Avenir Next', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-editorial: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
 }
 
 html {

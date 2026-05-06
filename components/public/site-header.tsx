@@ -8,6 +8,7 @@ import { PublicWalletButton } from '../shared/public-wallet-button';
 const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; note?: string }> = [
   { href: '/', label: 'Home' },
   { href: '/claims', label: 'Claims', note: 'Published graph' },
+  { href: '/activity', label: 'Activity', note: 'Protocol feed' },
   { href: '/create', label: 'Create', note: 'Protocol entry' },
   { href: '/learn', label: 'Learn', note: 'Protocol basics' },
 ];

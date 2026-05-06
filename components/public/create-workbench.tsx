@@ -151,7 +151,7 @@ const INLINE_CREATE_LABELS: Record<ClaimFieldKey, string> = {
 
 const MAX_IMAGE_SIZE_BYTES = 6 * 1024 * 1024;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/']);
-const MAX_CSV_BATCH_SIZE = 20;
+const MAX_CSV_BATCH_SIZE = 50;
 const MAX_LIST_BATCH_SIZE = 20;
 const HAS_TAG_PREDICATE_TERM_ID =
   '0x7ec36d201c842dc787b45cb5bb753bea4cf849be3908fb1b0a7d067c3c3cc1f5' as Hash;
@@ -543,7 +543,7 @@ function normalizeCsvSchemaType(value: string): AtomSchemaType | null {
   const normalized = slugifyCsvHeader(value);
 
   if (!normalized) {
-    return 'Thing';
+    return null;
   }
 
   if (normalized === 'thing') return 'Thing';
@@ -558,15 +558,16 @@ function normalizeCsvSchemaType(value: string): AtomSchemaType | null {
 function mapCsvRecordToAtom(
   values: Record<string, string>,
   csvLineNumber: number,
+  defaultSchemaType: AtomSchemaType,
 ): { atom: CsvAtomRecord; errors: string[] } {
   const schemaType = normalizeCsvSchemaType(values.schema_type ?? '');
   const errors: string[] = [];
 
-  if (!schemaType) {
+  if (values.schema_type?.trim() && !schemaType) {
     errors.push('schema_type must be Thing, Person, Organization, Account, or Raw.');
   }
 
-  const resolvedSchemaType = schemaType ?? 'Thing';
+  const resolvedSchemaType = schemaType ?? defaultSchemaType;
   const atom = createBatchAtomRow() as CsvAtomRecord;
   atom.csvLineNumber = csvLineNumber;
   atom.csvSource = values;
@@ -605,7 +606,10 @@ function mapCsvRecordToAtom(
   return { atom, errors };
 }
 
-function parseCsvAtomFile(text: string): { atoms: CsvAtomRecord[]; errors: string[] } {
+function parseCsvAtomFile(
+  text: string,
+  defaultSchemaType: AtomSchemaType = 'Thing',
+): { atoms: CsvAtomRecord[]; errors: string[] } {
   const rows = parseCsvRows(text);
 
   if (rows.length === 0) {
@@ -636,7 +640,7 @@ function parseCsvAtomFile(text: string): { atoms: CsvAtomRecord[]; errors: strin
     }
 
     const csvLineNumber = rowIndex + 2;
-    const { atom, errors: rowMappingErrors } = mapCsvRecordToAtom(values, csvLineNumber);
+    const { atom, errors: rowMappingErrors } = mapCsvRecordToAtom(values, csvLineNumber, defaultSchemaType);
     atoms.push(atom);
 
     rowMappingErrors.forEach((error) => {
@@ -2685,6 +2689,7 @@ function CsvAtomImportPanel({
   publicClient: ReturnType<typeof createPublicClient>;
 }) {
   const [csvText, setCsvText] = useState('');
+  const [csvDefaultSchemaType, setCsvDefaultSchemaType] = useState<AtomSchemaType>('Thing');
   const [atoms, setAtoms] = useState<CsvAtomRecord[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, string[]>>({});
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -2734,7 +2739,7 @@ function CsvAtomImportPanel({
     try {
       const text = await file.text();
       setCsvText(text);
-      const parsed = parseCsvAtomFile(text);
+      const parsed = parseCsvAtomFile(text, csvDefaultSchemaType);
       setAtoms(parsed.atoms);
       setImportErrors(parsed.errors);
       setRowErrors({});
@@ -2761,7 +2766,7 @@ function CsvAtomImportPanel({
     setStatus('Parsing CSV...');
 
     try {
-      const parsed = parseCsvAtomFile(csvText);
+      const parsed = parseCsvAtomFile(csvText, csvDefaultSchemaType);
       setAtoms(parsed.atoms);
       setImportErrors(parsed.errors);
       setRowErrors({});
@@ -2924,7 +2929,8 @@ function CsvAtomImportPanel({
           </h3>
           <p className="max-w-3xl text-sm leading-7 text-muted">
             Start with a simple `name` column, then add optional fields like `description`, `url`, `image_url`,
-            `deposit`, or `schema_type` when needed. CSV imports are capped at {MAX_CSV_BATCH_SIZE} atoms per transaction.
+            `deposit`, or `schema_type` when needed. If the file does not include `schema_type`, the default below
+            is applied. CSV imports are capped at {MAX_CSV_BATCH_SIZE} atoms per transaction.
           </p>
         </div>
 
@@ -2954,6 +2960,31 @@ function CsvAtomImportPanel({
               Clear import
             </button>
           </div>
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <label className="min-w-[12rem]">
+              <span className="mb-2 block text-[0.68rem] uppercase tracking-terminal text-muted">
+                Default schema
+              </span>
+              <select
+                value={csvDefaultSchemaType}
+                onChange={(event) => {
+                  setCsvDefaultSchemaType(event.target.value as AtomSchemaType);
+                  clearPreparedState();
+                }}
+                disabled={busy}
+                className="w-full rounded-full border border-line bg-white/75 px-4 py-2 text-sm text-ink outline-none transition-colors duration-150 focus:border-ink/15 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="Thing">Thing</option>
+                <option value="Person">Person</option>
+                <option value="Organization">Organization</option>
+                <option value="Account">Account</option>
+                <option value="Raw">Raw</option>
+              </select>
+            </label>
+            <p className="text-sm leading-6 text-muted">
+              Used only when a row does not include `schema_type`.
+            </p>
+          </div>
           <textarea
             value={csvText}
             onChange={(event) => {
@@ -2964,6 +2995,10 @@ function CsvAtomImportPanel({
             placeholder={'name,description,url,image_url,deposit,schema_type\nAcme,Trusted supplier,https://acme.com,,0.001,Thing'}
             className="mt-4 w-full rounded-xl border border-line/80 bg-white/70 px-4 py-3 font-mono text-sm leading-7 text-ink outline-none transition-colors duration-150 focus:border-ink/20"
           />
+          <p className="mt-3 text-sm leading-6 text-muted">
+            Rows with an explicit `schema_type` keep it. Empty `schema_type` values fall back to{' '}
+            {csvDefaultSchemaType}.
+          </p>
         </div>
 
         {atoms.length > 0 ? (
@@ -3033,22 +3068,38 @@ function CsvAtomImportPanel({
           <div className="rounded-[1.15rem] border border-dashed border-line bg-paper/60 p-4">
             <p className="text-[0.72rem] uppercase tracking-terminal text-muted">Import review</p>
             <div className="mt-4 space-y-3">
-              {preparedAtoms.map((atom, index) => (
-                <div key={atom.rowId} className="rounded-xl border border-line/70 bg-white/75 p-3">
+              {preparedAtoms.map((atom, index) => {
+                const sourceRow = atoms.find((entry) => entry.id === atom.rowId);
+                const previewUrl = sourceRow ? getImagePreviewCandidates(sourceRow.image)[0] ?? null : null;
+
+                return (
+                  <div key={atom.rowId} className="rounded-xl border border-line/70 bg-white/75 p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm text-ink">
-                        {index + 1}. {atom.displayName}
-                      </p>
-                      <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-muted">{atom.schemaType}</p>
+                    <div className="flex min-w-0 items-start gap-3">
+                      {previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt={atom.displayName}
+                          className="h-12 w-12 rounded-[0.85rem] border border-line/80 object-cover"
+                        />
+                      ) : (
+                        <div className="h-12 w-12 rounded-[0.85rem] border border-dashed border-line/80 bg-paper/70" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm text-ink">
+                          {index + 1}. {atom.displayName}
+                        </p>
+                        <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-muted">{atom.schemaType}</p>
+                      </div>
                     </div>
                     <p className="text-sm text-muted">
                       {formatTokenAmount(atom.asset, networkConfig.nativeSymbol)}
                     </p>
                   </div>
-                  <p className="mt-2 break-all font-mono text-[0.72rem] leading-5 text-muted">{atom.atomId}</p>
-                </div>
-              ))}
+                    <p className="mt-2 break-all font-mono text-[0.72rem] leading-5 text-muted">{atom.atomId}</p>
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : null}
@@ -4201,16 +4252,20 @@ export function CreateWorkbench() {
   );
 
   const wallet = useMemo<WalletState>(() => {
-    if (isConnected && address) {
+    const hasResolvedAccount = Boolean(address && chainId !== null);
+
+    if (hasResolvedAccount && (isConnected || accountStatus === 'reconnecting')) {
+      const resolvedAddress = getAddress(address!);
+
       return {
         status: 'connected',
-        address: getAddress(address),
+        address: resolvedAddress,
         chainId: chainId ?? null,
         error: walletUiError,
       };
     }
 
-    if (accountStatus === 'connecting' || accountStatus === 'reconnecting') {
+    if (accountStatus === 'connecting') {
       return {
         status: 'connecting',
         address: address ? getAddress(address) : null,
@@ -4672,7 +4727,11 @@ export function CreateWorkbench() {
                       : 'Create claim'}
                 </button>
                 <p className="text-sm leading-7 text-muted">
-                  All three atoms must already exist before the claim can be published.
+                  {hasNetworkMismatch
+                    ? `Switch your wallet to ${networkConfig.name} before publishing this claim.`
+                    : !canWrite
+                      ? `Connect your wallet on ${networkConfig.name} before publishing this claim.`
+                      : 'All three atoms must already exist before the claim can be published.'}
                 </p>
               </div>
 

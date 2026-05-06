@@ -49,6 +49,11 @@ export interface IntuitionUploadedImage {
   safe?: boolean;
 }
 
+interface IntuitionGraphResponse<TData> {
+  data?: TData;
+  errors?: Array<{ message?: string }>;
+}
+
 export const INTUITION_NETWORKS: Record<PublicIntuitionNetwork, IntuitionNetworkConfig> = {
   mainnet: {
     key: 'mainnet',
@@ -136,6 +141,82 @@ export function getIntuitionNetworkByChainId(chainId: number | null): IntuitionN
   }
 
   return Object.values(INTUITION_NETWORKS).find((network) => network.chainId === chainId) ?? null;
+}
+
+export function resolveIntuitionImageUrl(value?: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const raw = value.trim().replace(/^['"]|['"]$/g, '');
+
+  if (!raw) {
+    return null;
+  }
+
+  if (
+    raw.startsWith('https://') ||
+    raw.startsWith('http://') ||
+    raw.startsWith('data:') ||
+    raw.startsWith('blob:')
+  ) {
+    return raw;
+  }
+
+  if (raw.startsWith('ipfs://ipfs/')) {
+    return `https://ipfs.io/${raw.slice('ipfs://'.length)}`;
+  }
+
+  if (raw.startsWith('ipfs://')) {
+    return `https://ipfs.io/ipfs/${raw.slice('ipfs://'.length)}`;
+  }
+
+  if (raw.startsWith('/ipfs/')) {
+    return `https://ipfs.io${raw}`;
+  }
+
+  return null;
+}
+
+export async function queryIntuitionGraph<TData, TVariables extends Record<string, unknown>>(
+  network: PublicIntuitionNetwork,
+  query: string,
+  variables: TVariables,
+  signal?: AbortSignal,
+): Promise<TData> {
+  const requestInit: RequestInit = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      variables,
+    }),
+    cache: 'no-store',
+  };
+
+  if (signal) {
+    requestInit.signal = signal;
+  }
+
+  const response = await fetch(getIntuitionNetwork(network).graphqlUrl, requestInit);
+
+  if (!response.ok) {
+    throw new Error(`GraphQL request failed with HTTP ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as IntuitionGraphResponse<TData>;
+
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message ?? 'Unknown GraphQL error').join('; '));
+  }
+
+  if (!payload.data) {
+    throw new Error('GraphQL request returned no data.');
+  }
+
+  return payload.data;
 }
 
 const UPLOAD_IMAGE_MUTATION = `
