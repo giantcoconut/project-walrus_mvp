@@ -359,6 +359,65 @@ function getImagePreviewCandidates(value?: string | null): string[] {
   return [];
 }
 
+
+function CsvImagePreview({
+  imageUrl,
+  alt,
+  size = 'sm',
+}: {
+  imageUrl?: string | null | undefined;
+  alt: string;
+  size?: 'sm' | 'md';
+}) {
+  const previewUrl = getImagePreviewCandidates(imageUrl)[0] ?? null;
+  const [status, setStatus] = useState<'empty' | 'loading' | 'loaded' | 'error'>(
+    previewUrl ? 'loading' : 'empty',
+  );
+
+  useEffect(() => {
+    setStatus(previewUrl ? 'loading' : 'empty');
+  }, [previewUrl]);
+
+  const frameClassName =
+    size === 'md'
+      ? 'h-12 w-12 rounded-[0.85rem]'
+      : 'h-10 w-10 rounded-[0.75rem]';
+
+  if (!previewUrl || status === 'error') {
+    return (
+      <div className="space-y-2">
+        <div
+          className={`${frameClassName} flex items-center justify-center border ${
+            status === 'error' ? 'border-[#d8a68e] bg-[#fff5f0]' : 'border-dashed border-line/80 bg-paper/70'
+          }`}
+        >
+          <span className="text-[0.62rem] uppercase tracking-terminal text-muted">
+            {status === 'error' ? 'Broken' : 'No image'}
+          </span>
+        </div>
+        {status === 'error' ? (
+          <p className="max-w-[10rem] text-[0.68rem] leading-5 text-[#8a4b38]">Broken image URL</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <img
+        src={previewUrl}
+        alt={alt}
+        onLoad={() => setStatus('loaded')}
+        onError={() => setStatus('error')}
+        className={`${frameClassName} border border-line/80 object-cover ${status === 'loading' ? 'bg-paper/70' : ''}`}
+      />
+      {status === 'loaded' ? (
+        <p className="text-[0.68rem] uppercase tracking-terminal text-[#1f8a62]">Image ok</p>
+      ) : null}
+    </div>
+  );
+}
+
 function validateAtomImageFile(file: File): string | null {
   if (!Array.from(SUPPORTED_IMAGE_MIME_TYPES).some((prefix) => file.type.startsWith(prefix))) {
     return 'Only image files are supported.';
@@ -3108,6 +3167,7 @@ function CsvAtomImportPanel({
                   <thead className="sticky top-0 bg-paper/95 text-[0.68rem] uppercase tracking-terminal text-muted">
                     <tr>
                       <th className="px-4 py-3">Line</th>
+                      <th className="px-4 py-3">Image</th>
                       <th className="px-4 py-3">Atom</th>
                       <th className="px-4 py-3">Type</th>
                       <th className="px-4 py-3">Deposit</th>
@@ -3119,13 +3179,21 @@ function CsvAtomImportPanel({
                       const atomErrors = rowErrors[atom.id] ?? [];
                       return (
                         <tr key={atom.id}>
-                          <td className="px-4 py-3 text-muted">{atom.csvLineNumber}</td>
-                          <td className="px-4 py-3 text-ink">
-                            {getAtomDisplayName(atom) || 'Untitled atom'}
+                          <td className="px-4 py-3 align-top text-muted">{atom.csvLineNumber}</td>
+                          <td className="px-4 py-3 align-top">
+                            <CsvImagePreview imageUrl={atom.image} alt={getAtomDisplayName(atom) || 'CSV atom preview'} />
                           </td>
-                          <td className="px-4 py-3 text-muted">{atom.schemaType}</td>
-                          <td className="px-4 py-3 text-muted">{atom.support.trim() || '0'}</td>
-                          <td className="px-4 py-3">
+                          <td className="px-4 py-3 align-top text-ink">
+                            <div className="space-y-1">
+                              <p>{getAtomDisplayName(atom) || 'Untitled atom'}</p>
+                              {atom.image.trim() ? (
+                                <p className="max-w-[18rem] break-all font-mono text-[0.68rem] leading-5 text-muted">{atom.image.trim()}</p>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 align-top text-muted">{atom.schemaType}</td>
+                          <td className="px-4 py-3 align-top text-muted">{atom.support.trim() || '0'}</td>
+                          <td className="px-4 py-3 align-top">
                             {atomErrors.length > 0 ? (
                               <span className="text-[#8a4b38]">{atomErrors[0]}</span>
                             ) : (
@@ -3158,32 +3226,32 @@ function CsvAtomImportPanel({
             <div className="mt-4 space-y-3">
               {preparedAtoms.map((atom, index) => {
                 const sourceRow = atoms.find((entry) => entry.id === atom.rowId);
-                const previewUrl = sourceRow ? getImagePreviewCandidates(sourceRow.image)[0] ?? null : null;
 
                 return (
                   <div key={atom.rowId} className="rounded-xl border border-line/70 bg-white/75 p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="flex min-w-0 items-start gap-3">
-                      {previewUrl ? (
-                        <img
-                          src={previewUrl}
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <CsvImagePreview
+                          imageUrl={sourceRow?.image}
                           alt={atom.displayName}
-                          className="h-12 w-12 rounded-[0.85rem] border border-line/80 object-cover"
+                          size="md"
                         />
-                      ) : (
-                        <div className="h-12 w-12 rounded-[0.85rem] border border-dashed border-line/80 bg-paper/70" />
-                      )}
-                      <div className="min-w-0">
-                        <p className="text-sm text-ink">
-                          {index + 1}. {atom.displayName}
-                        </p>
-                        <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-muted">{atom.schemaType}</p>
+                        <div className="min-w-0">
+                          <p className="text-sm text-ink">
+                            {index + 1}. {atom.displayName}
+                          </p>
+                          <p className="mt-1 text-[0.68rem] uppercase tracking-terminal text-muted">{atom.schemaType}</p>
+                          {sourceRow?.image.trim() ? (
+                            <p className="mt-2 max-w-[28rem] break-all font-mono text-[0.68rem] leading-5 text-muted">
+                              {sourceRow.image.trim()}
+                            </p>
+                          ) : null}
+                        </div>
                       </div>
+                      <p className="text-sm text-muted">
+                        {formatTokenAmount(atom.asset, networkConfig.nativeSymbol)}
+                      </p>
                     </div>
-                    <p className="text-sm text-muted">
-                      {formatTokenAmount(atom.asset, networkConfig.nativeSymbol)}
-                    </p>
-                  </div>
                     <p className="mt-2 break-all font-mono text-[0.72rem] leading-5 text-muted">{atom.atomId}</p>
                   </div>
                 );
