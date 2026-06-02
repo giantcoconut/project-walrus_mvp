@@ -118,9 +118,11 @@ interface ListCsvImportRow {
   id: string;
   lineNumber: number;
   memberName: string;
+  memberDescription: string;
   selected: IntuitionAtomSearchResult | null;
   candidates: IntuitionAtomSearchResult[];
-  status: 'resolved' | 'ambiguous' | 'missing';
+  candidateCount: number;
+  status: 'resolved' | 'ambiguous' | 'missing' | 'invalid';
   note: string;
 }
 
@@ -185,6 +187,10 @@ function normalizeSearchText(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+function findHeaderIndex(headers: string[], candidates: string[]) {
+  return headers.findIndex((header) => candidates.includes(header));
+}
+
 function matchesCreatorAddress(atom: IntuitionAtomSearchResult, walletAddress?: string | null): boolean {
   if (!walletAddress) {
     return false;
@@ -220,6 +226,69 @@ function sortAtomsForWalletPreference(
 
     return right.totalShares.localeCompare(left.totalShares);
   });
+}
+
+function getAtomSearchDescription(atom: IntuitionAtomSearchResult): string {
+  return atom.description ?? '';
+}
+
+function scoreDescriptionMatch(description: string, normalizedTarget: string): number {
+  const normalizedDescription = normalizeSearchText(description);
+
+  if (!normalizedDescription) {
+    return 0;
+  }
+
+  if (normalizedDescription === normalizedTarget) {
+    return 300;
+  }
+
+  if (normalizedDescription.includes(normalizedTarget) || normalizedTarget.includes(normalizedDescription)) {
+    return 200;
+  }
+
+  const targetWords = new Set(normalizedTarget.split(' ').filter(Boolean));
+  const descriptionWords = new Set(normalizedDescription.split(' ').filter(Boolean));
+  let overlap = 0;
+
+  for (const word of targetWords) {
+    if (descriptionWords.has(word)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap;
+}
+
+function chooseCandidateByDescription(
+  candidates: IntuitionAtomSearchResult[],
+  description: string,
+): IntuitionAtomSearchResult | null {
+  const normalizedDescription = normalizeSearchText(description);
+
+  if (!normalizedDescription || candidates.length < 2) {
+    return null;
+  }
+
+  const scored = candidates
+    .map((atom) => ({
+      atom,
+      score: scoreDescriptionMatch(getAtomSearchDescription(atom), normalizedDescription),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const top = scored[0];
+  const runnerUp = scored[1];
+
+  if (!top || top.score === 0) {
+    return null;
+  }
+
+  if (runnerUp && runnerUp.score === top.score) {
+    return null;
+  }
+
+  return top.atom;
 }
 
 async function searchAtoms(
@@ -659,7 +728,10 @@ function parseCsvAtomFile(
   return { atoms, errors };
 }
 
-function parseListCsvFile(text: string): { rows: Array<{ lineNumber: number; memberName: string }>; errors: string[] } {
+function parseListCsvFile(text: string): {
+  rows: Array<{ lineNumber: number; memberName: string; memberDescription: string; errors: string[] }>;
+  errors: string[];
+} {
   const rows = parseCsvRows(text);
 
   if (rows.length === 0) {
@@ -673,29 +745,45 @@ function parseListCsvFile(text: string): { rows: Array<{ lineNumber: number; mem
   }
 
   const headers = headerRow.map(slugifyCsvHeader);
-  const preferredHeader = ['name', 'member', 'atom', 'label'].find((header) => headers.includes(header));
+  const memberHeaderIndex = findHeaderIndex(headers, [
+    'subject_name',
+    'subjectname',
+    'name',
+    'member',
+    'atom',
+    'label',
+    'subject',
+  ]);
+  const descriptionHeaderIndex = findHeaderIndex(headers, [
+    'subject_description',
+    'subjectdescription',
+    'description',
+    'summary',
+  ]);
 
-  if (!preferredHeader) {
-    throw new Error('CSV must include a name, member, atom, or label column.');
+  if (memberHeaderIndex === -1) {
+    throw new Error(
+      'CSV must include a subject_name column. name, member, atom, label, and subject are also accepted.',
+    );
   }
 
-  const headerIndex = headers.indexOf(preferredHeader);
-  const parsedRows: Array<{ lineNumber: number; memberName: string }> = [];
+  const parsedRows: Array<{ lineNumber: number; memberName: string; memberDescription: string; errors: string[] }> = [];
   const errors: string[] = [];
 
   rows.slice(1).forEach((cells, rowIndex) => {
-    const memberName = (cells[headerIndex] ?? '').trim();
+    const memberName = (cells[memberHeaderIndex] ?? '').trim();
+    const memberDescription = descriptionHeaderIndex === -1 ? '' : (cells[descriptionHeaderIndex] ?? '').trim();
     const lineNumber = rowIndex + 2;
+    const rowErrors: string[] = [];
 
     if (!memberName) {
-      errors.push(`Line ${lineNumber}: ${preferredHeader} is required.`);
-      return;
+      rowErrors.push('Missing member name.');
     }
 
-    parsedRows.push({ lineNumber, memberName });
+    parsedRows.push({ lineNumber, memberName, memberDescription, errors: rowErrors });
   });
 
-  if (parsedRows.length === 0) {
+  if (parsedRows.every((row) => row.errors.length > 0)) {
     throw new Error('CSV did not contain any usable members.');
   }
 
@@ -3650,32 +3738,71 @@ function ListCreatorPanel({
     }
   }
 
-  async function handleResolveCsv() {
+  async function handleResolveCsv(nextCsvText?: string) {
     setIsResolvingCsv(true);
     setCsvStatus('Validating CSV rows and resolving member atoms against the graph...');
     setCsvErrors([]);
     clearActionState();
 
     try {
-      const { rows, errors: parsingErrors } = parseListCsvFile(csvText);
+      const sourceText = typeof nextCsvText === 'string' ? nextCsvText : csvText;
+      const { rows, errors: parsingErrors } = parseListCsvFile(sourceText);
       const cappedRows = rows.slice(0, MAX_LIST_BATCH_SIZE);
 
       const resolvedRows: ListCsvImportRow[] = await Promise.all(
         cappedRows.map(async (row) => {
-          const results = await searchAtoms(network, row.memberName, true, 8, walletState.address);
           const normalizedName = normalizeSearchText(row.memberName);
+
+          if (row.errors.length > 0) {
+            return {
+              id: `${row.lineNumber}-${normalizedName || 'invalid'}`,
+              lineNumber: row.lineNumber,
+              memberName: row.memberName,
+              memberDescription: row.memberDescription,
+              selected: null,
+              candidates: [],
+              candidateCount: 0,
+              status: 'invalid' as const,
+              note: row.errors.join(' '),
+            };
+          }
+
+          const results = await searchAtoms(network, row.memberName, true, 8, walletState.address);
           const exactMatches = results.filter((candidate) => normalizeSearchText(candidate.label) === normalizedName);
           const walletPreferredMatches = exactMatches.filter((candidate) =>
             matchesCreatorAddress(candidate, walletState.address),
           );
+          const candidatePool = walletPreferredMatches.length > 0 ? walletPreferredMatches : exactMatches;
+          const descriptionMatch = chooseCandidateByDescription(candidatePool, row.memberDescription);
+
+          if (descriptionMatch) {
+            return {
+              id: `${row.lineNumber}-${normalizedName}`,
+              lineNumber: row.lineNumber,
+              memberName: row.memberName,
+              memberDescription: row.memberDescription,
+              selected: descriptionMatch,
+              candidates: exactMatches,
+              candidateCount: exactMatches.length,
+              status: 'resolved' as const,
+              note:
+                walletPreferredMatches.length > 1
+                  ? 'Resolved from your wallet atoms using description.'
+                  : walletPreferredMatches.length === 1
+                    ? 'Resolved to your wallet atom.'
+                    : 'Resolved by exact label and description.',
+            };
+          }
 
           if (walletPreferredMatches.length === 1) {
             return {
               id: `${row.lineNumber}-${normalizedName}`,
               lineNumber: row.lineNumber,
               memberName: row.memberName,
+              memberDescription: row.memberDescription,
               selected: walletPreferredMatches[0] ?? null,
               candidates: exactMatches,
+              candidateCount: exactMatches.length,
               status: 'resolved' as const,
               note: 'Exact match found and your own atom was preferred.',
             };
@@ -3686,8 +3813,10 @@ function ListCreatorPanel({
               id: `${row.lineNumber}-${normalizedName}`,
               lineNumber: row.lineNumber,
               memberName: row.memberName,
+              memberDescription: row.memberDescription,
               selected: exactMatches[0] ?? null,
               candidates: exactMatches,
+              candidateCount: exactMatches.length,
               status: 'resolved' as const,
               note: 'Exact match found.',
             };
@@ -3698,10 +3827,15 @@ function ListCreatorPanel({
               id: `${row.lineNumber}-${normalizedName}`,
               lineNumber: row.lineNumber,
               memberName: row.memberName,
+              memberDescription: row.memberDescription,
               selected: null,
               candidates: exactMatches,
+              candidateCount: exactMatches.length,
               status: 'ambiguous' as const,
-              note: 'Multiple exact matches exist. Pick the right atom before submitting.',
+              note:
+                walletPreferredMatches.length > 1
+                  ? `${walletPreferredMatches.length} exact matches were created by your wallet.`
+                  : `${exactMatches.length} exact matches found. Pick the right atom before submitting.`,
             };
           }
 
@@ -3709,8 +3843,10 @@ function ListCreatorPanel({
             id: `${row.lineNumber}-${normalizedName}`,
             lineNumber: row.lineNumber,
             memberName: row.memberName,
+            memberDescription: row.memberDescription,
             selected: null,
             candidates: [],
+            candidateCount: 0,
             status: 'missing' as const,
             note: 'No exact atom matched this member name on the active network.',
           };
@@ -3970,6 +4106,7 @@ function ListCreatorPanel({
                     setCsvErrors([]);
                     setCsvStatus(null);
                     clearActionState();
+                    void handleResolveCsv(text);
                   });
                 }}
               />
@@ -4039,12 +4176,20 @@ function ListCreatorPanel({
                       <div>
                         <p className="text-[0.68rem] uppercase tracking-terminal text-muted">Line {row.lineNumber}</p>
                         <p className="mt-1 text-sm text-ink">{row.memberName}</p>
+                        {row.memberDescription ? (
+                          <p className="mt-1 text-sm leading-6 text-muted">{row.memberDescription}</p>
+                        ) : null}
                       </div>
                       <span className="rounded-full border border-line bg-paper/80 px-3 py-1 text-[0.68rem] uppercase tracking-terminal text-muted">
                         {row.status}
                       </span>
                     </div>
                     <p className="mt-3 text-sm leading-6 text-muted">{row.note}</p>
+                    {row.candidateCount > 1 ? (
+                      <p className="mt-2 text-[0.72rem] uppercase tracking-terminal text-muted">
+                        {row.candidateCount} exact candidates found
+                      </p>
+                    ) : null}
 
                     {row.status === 'resolved' && row.selected ? (
                       <div className="mt-3 rounded-xl border border-ink/10 bg-paper/70 p-4">
